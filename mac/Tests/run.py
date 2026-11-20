@@ -18,8 +18,12 @@ class Provider(BaseHTTPRequestHandler):
         system, user = request["messages"]
         assert system["role"] == "system" and user["role"] == "user"
         payload = json.loads(user["content"])
-        assert payload["text"] == "我这边都行，你定吧。"
-        assert payload["from"] == "Simplified Chinese" and payload["to"] == "English"
+        multilingual = payload["text"] == "Le train part demain matin."
+        if multilingual:
+            assert payload["from"] == "French" and payload["to"] == "Korean"
+        else:
+            assert payload["text"] == "我这边都行，你定吧。"
+            assert payload["from"] == "Simplified Chinese" and payload["to"] == "English"
         model = request["model"]
         if model in ("limit", "unauthorized"):
             self.send_response(429 if model == "limit" else 401)
@@ -32,6 +36,8 @@ class Provider(BaseHTTPRequestHandler):
             return
         text = ("Please choose whichever works best for you."
                 if "courteous" in payload["tone"] else "Whatever works for you.")
+        if multilingual:
+            text = "기차는 내일 아침에 출발합니다."
         body = json.dumps({"choices": [{"message": {"content": "" if model == "empty" else text}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -51,7 +57,7 @@ def main():
         dictionary = directory / "dictionary.sqlite3"
         with gzip.open(root / "Resources/dictionary.sqlite3.gz", "rb") as compressed, dictionary.open("wb") as raw:
             shutil.copyfileobj(compressed, raw)
-        subprocess.run(["xcrun", "swiftc", str(root / "Sources/Dictionary.swift"),
+        subprocess.run(["xcrun", "swiftc", str(root / "Sources/Dictionary.swift"), str(root / "Sources/Language.swift"),
                         str(root / "Sources/Translation.swift"), str(root / "Tests/Checks.swift"),
                         "-o", str(binary)], check=True)
         worker = Thread(target=server.serve_forever, daemon=True)

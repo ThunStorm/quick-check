@@ -59,3 +59,64 @@ enum ProviderPreferences {
         }
     }
 }
+
+@MainActor
+final class LanguagePreferences: NSObject {
+    private let primary = NSPopUpButton()
+    private let secondary = NSPopUpButton()
+
+    init(settings: LanguageSettings) {
+        super.init()
+        primary.setAccessibilityLabel("主语言")
+        secondary.setAccessibilityLabel("默认第二语言")
+        primary.addItems(withTitles: Language.allCases.map(\.name))
+        primary.selectItem(at: Language.allCases.firstIndex(of: settings.primary) ?? 0)
+        primary.target = self
+        primary.action = #selector(refreshSecondary)
+        fillSecondary(selected: settings.defaultSecond)
+    }
+
+    func show() -> LanguageSettings? {
+        let form = NSGridView(views: [
+            [NSTextField(labelWithString: "主语言"), primary],
+            [NSTextField(labelWithString: "默认第二语言"), secondary]
+        ])
+        form.columnSpacing = 12
+        form.rowSpacing = 8
+        form.column(at: 0).xPlacement = .trailing
+        form.column(at: 1).width = 180
+        form.column(at: 1).xPlacement = .fill
+        form.frame.size = form.fittingSize
+
+        let alert = NSAlert()
+        alert.messageText = "语言设置"
+        alert.informativeText = "两个语言之间自动判断翻译方向。临时切换的第二语言闲置五分钟后恢复默认。"
+        alert.accessoryView = form
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn, let secondaryLanguage else { return nil }
+        return LanguageSettings(primary: primaryLanguage, defaultSecond: secondaryLanguage)
+    }
+
+    private var primaryLanguage: Language {
+        Language.allCases[primary.indexOfSelectedItem]
+    }
+
+    private var secondaryLanguage: Language? {
+        (secondary.selectedItem?.representedObject as? String).flatMap(Language.init(rawValue:))
+    }
+
+    @objc private func refreshSecondary() {
+        fillSecondary(selected: secondaryLanguage ?? .english)
+    }
+
+    private func fillSecondary(selected: Language) {
+        let settings = LanguageSettings(primary: primaryLanguage, defaultSecond: selected)
+        secondary.removeAllItems()
+        for choice in Language.allCases where choice != settings.primary {
+            secondary.addItem(withTitle: choice.name)
+            secondary.lastItem?.representedObject = choice.rawValue
+        }
+        secondary.selectItem(withTitle: settings.defaultSecond.name)
+    }
+}

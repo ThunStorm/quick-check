@@ -29,7 +29,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private let inputScroll = NSScrollView()
     private let input = NSTextView()
     private let placeholder = NSTextField(labelWithString: "输入单词或粘贴一段文字")
-    private let language = NSPopUpButton()
+    private let language = NSPopUpButton(frame: .zero, pullsDown: true)
     private let settings = NSButton(image: NSImage(systemSymbolName: "gearshape", accessibilityDescription: "设置")!,
                                     target: nil, action: nil)
     private let divider = NSBox()
@@ -46,7 +46,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private weak var statusButton: NSStatusBarButton?
     private var monitors: [Any] = []
     private var previousApp: NSRunningApplication?
-    private var session = LookupSession()
+    private var session = LookupSession(settings: LanguageSettings.load())
     private var direction: Direction?
     private var ambiguous = false
     private var entries: [DictionaryEntry] = []
@@ -156,10 +156,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         placeholder.textColor = .placeholderTextColor
         placeholder.font = input.font
 
-        language.addItems(withTitles: ["英", "日"])
-        language.setAccessibilityLabel("第二语言")
-        language.target = self
-        language.action = #selector(changeLanguage)
+        installLanguageMenu()
         settings.target = self
         settings.action = #selector(showMenu(_:))
         settings.isBordered = false
@@ -276,8 +273,20 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         return false
     }
 
-    @objc private func changeLanguage() {
-        session.select(language.indexOfSelectedItem == 1 ? .japanese : .english)
+    private func installLanguageMenu() {
+        language.removeAllItems()
+        language.addItem(withTitle: session.second.label)
+        for choice in Language.allCases where choice != session.settings.primary {
+            let item = language.menu?.addItem(withTitle: choice.name, action: #selector(changeLanguage(_:)),
+                                              keyEquivalent: "")
+            item?.target = self
+            item?.representedObject = choice.rawValue
+        }
+    }
+
+    @objc private func changeLanguage(_ sender: NSMenuItem) {
+        guard let code = sender.representedObject as? String, let choice = Language(rawValue: code) else { return }
+        session.select(choice)
         refreshQuery()
         panel.makeFirstResponder(input)
     }
@@ -297,10 +306,18 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         errorMessage = nil
         output = nil
         displayedTone = .original
-        let detected = session.direction(for: source, dictionary: dictionary)
-        direction = source.isEmpty ? nil : (override ?? detected.0)
-        ambiguous = detected.ambiguous && override == nil
-        entries = direction.map { dictionary.lookup(source, direction: $0) } ?? []
+        let text = source
+        if text.isEmpty {
+            direction = nil
+            ambiguous = false
+            entries = []
+        } else {
+            let detected = session.direction(for: text, dictionary: dictionary)
+            let currentDirection = override ?? detected.0
+            direction = currentDirection
+            ambiguous = detected.ambiguous && override == nil
+            entries = dictionary.lookup(text, direction: currentDirection)
+        }
         render()
     }
 
@@ -376,7 +393,11 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     private func render() {
-        language.selectItem(at: session.second == .japanese ? 1 : 0)
+        language.item(at: 0)?.title = session.second.label
+        language.setAccessibilityLabel("第二语言（\(session.second.name)）")
+        for item in language.itemArray {
+            item.state = (item.representedObject as? String) == session.second.rawValue ? .on : .off
+        }
         placeholder.isHidden = !input.string.isEmpty
         directionButton.title = (direction?.label ?? "") + (ambiguous ? " ▾" : "")
         directionButton.isHidden = direction == nil
@@ -418,7 +439,9 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     private func layout(resultContent: NSAttributedString) {
-        let inputWidth = width - 113
+        let languageWidth: CGFloat = session.second.label.count > 1 ? 58 : 49
+        let inputX = 18 + languageWidth
+        let inputWidth = width - inputX - 46
         let contentWidth = width - padding * 2
         let options: NSString.DrawingOptions = [.usesLineFragmentOrigin, .usesFontLeading]
         let inputBounds = (input.string + " ").boundingRect(
@@ -450,11 +473,11 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         layoutOutline(width: width, height: height)
         surface.frame = NSRect(x: 0, y: 0, width: width, height: height)
         let rowY = height - inputTop - inputHeight
-        language.frame = NSRect(x: 13, y: height - 39, width: 49, height: 26)
+        language.frame = NSRect(x: 13, y: height - 39, width: languageWidth, height: 26)
         settings.frame = NSRect(x: width - 37, y: height - 37, width: 23, height: 22)
-        inputScroll.frame = NSRect(x: 67, y: rowY, width: inputWidth, height: inputHeight)
+        inputScroll.frame = NSRect(x: inputX, y: rowY, width: inputWidth, height: inputHeight)
         inputScroll.hasVerticalScroller = inputHeight >= 94
-        placeholder.frame = NSRect(x: 67, y: height - 35, width: inputWidth, height: 20)
+        placeholder.frame = NSRect(x: inputX, y: height - 35, width: inputWidth, height: 20)
         divider.isHidden = !expanded
         divider.frame = NSRect(x: padding, y: rowY - 9, width: contentWidth, height: 1)
         resultScroll.isHidden = resultHeight == 0
@@ -484,7 +507,9 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     @objc private func showMenu(_ sender: NSButton) {
         let menu = NSMenu()
-        let preferences = menu.addItem(withTitle: "翻译设置…", action: #selector(showSettings), keyEquivalent: "")
+        let languages = menu.addItem(withTitle: "语言设置…", action: #selector(showLanguageSettings), keyEquivalent: "")
+        languages.target = self
+        let preferences = menu.addItem(withTitle: "翻译接口…", action: #selector(showSettings), keyEquivalent: "")
         preferences.target = self
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: "退出 Quick Check", action: #selector(NSApplication.terminate(_:)),
@@ -495,6 +520,19 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     @objc private func showSettings() {
         dismiss(restoreFocus: false)
+        NSApp.activate()
         ProviderPreferences.show()
+    }
+
+    @objc private func showLanguageSettings() {
+        dismiss(restoreFocus: false)
+        NSApp.activate()
+        if let saved = LanguagePreferences(settings: session.settings).show(), saved != session.settings {
+            saved.save()
+            session = LookupSession(settings: saved)
+            installLanguageMenu()
+            refreshQuery()
+        }
+        show()
     }
 }
