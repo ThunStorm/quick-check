@@ -48,8 +48,9 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private var errorMessage: String?
     private var request: Task<Void, Never>?
     private var generation = 0
+    private var anchorToStatusItem = false
 
-    init(statusButton: NSStatusBarButton, dictionary: LocalDictionary) {
+    init(statusButton: NSStatusBarButton?, dictionary: LocalDictionary) {
         self.statusButton = statusButton
         self.dictionary = dictionary
         super.init()
@@ -59,19 +60,23 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private var source: String { input.string.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     func toggle() {
-        if panel.isVisible { dismiss(restoreFocus: true) } else { show() }
+        if panel.isVisible { dismiss(restoreFocus: true) } else { show(anchoredToStatusItem: true) }
     }
 
-    private func show() {
-        previousApp = NSWorkspace.shared.frontmostApplication
+    func show(anchoredToStatusItem: Bool = false) {
+        let wasVisible = panel.isVisible
+        if !wasVisible { previousApp = NSWorkspace.shared.frontmostApplication }
+        anchorToStatusItem = anchoredToStatusItem
         if session.touch() { refreshQuery() }
         updateSurface()
         render()
         NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(input)
-        input.setSelectedRange(NSRange(location: 0, length: (input.string as NSString).length))
-        installMonitors()
+        if !wasVisible {
+            input.setSelectedRange(NSRange(location: 0, length: (input.string as NSString).length))
+            installMonitors()
+        }
     }
 
     private func dismiss(restoreFocus: Bool) {
@@ -395,8 +400,8 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         let extraHeight: CGFloat = expanded ? 37 + (resultHeight > 0 ? resultHeight + 6 : 0) : 0
         let height = inputTop + inputHeight + 14 + extraHeight
 
-        let statusWindow = statusButton?.window
-        if let screen = statusWindow?.screen ?? NSScreen.main {
+        let statusWindow = anchorToStatusItem ? statusButton?.window : nil
+        if let screen = statusWindow?.screen ?? NSScreen.main ?? NSScreen.screens.first {
             let bounds = screen.visibleFrame
             // The status window already has its position in screen coordinates.
             let anchor = statusWindow.flatMap { window in
@@ -404,8 +409,8 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
             }
             let centerX = anchor?.midX ?? bounds.midX
             let x = min(max(centerX - width / 2, bounds.minX + 8), bounds.maxX - width - 8)
-            let top = min(anchor?.minY ?? bounds.maxY, bounds.maxY)
-            panel.setFrame(NSRect(x: x, y: top - height - 3, width: width, height: height), display: true)
+            let top = anchor.map { min($0.minY, bounds.maxY) - 3 } ?? bounds.maxY - 64
+            panel.setFrame(NSRect(x: x, y: top - height, width: width, height: height), display: true)
         }
         surface.frame = NSRect(x: 0, y: 0, width: width, height: height)
         let rowY = height - inputTop - inputHeight
