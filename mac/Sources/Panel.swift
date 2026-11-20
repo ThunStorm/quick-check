@@ -12,6 +12,29 @@ private final class LookupPanel: NSPanel {
 
 private final class QueryTextView: NSTextView {
     private(set) var isPasting = false
+    private var updatingMarkedText = false
+    var onCompositionChange: (() -> Void)?
+    var isComposing: Bool { updatingMarkedText || hasMarkedText() }
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        updatingMarkedText = true
+        onCompositionChange?()
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        updatingMarkedText = false
+        onCompositionChange?()
+    }
+
+    override func unmarkText() {
+        let wasComposing = isComposing
+        super.unmarkText()
+        if wasComposing { onCompositionChange?() }
+    }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        let wasComposing = isComposing
+        super.insertText(insertString, replacementRange: replacementRange)
+        if wasComposing { onCompositionChange?() }
+    }
 
     override func paste(_ sender: Any?) {
         isPasting = true
@@ -66,6 +89,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private var session = LookupSession(settings: LanguageSettings.load())
     private var direction: Direction?
     private var dictionaryResult = DictionaryResult(entries: [])
+    private var lastQueriedText = ""
     private var output: String?
     private var displayedTone = Tone.original
     private var pendingTone: Tone?
@@ -167,11 +191,13 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         prepareText(input, scroll: inputScroll, editable: true, font: .systemFont(ofSize: 15))
         prepareText(result, scroll: resultScroll, editable: false, font: .systemFont(ofSize: 14))
         input.delegate = self
+        input.onCompositionChange = { [weak self] in self?.compositionChanged() }
         input.setAccessibilityLabel("查询文本")
         result.setAccessibilityLabel("查询结果")
         placeholder.textColor = .placeholderTextColor
         placeholder.font = input.font
 
+        language.controlSize = .small
         installLanguageMenu()
         settings.target = self
         settings.action = #selector(showMenu(_:))
@@ -267,13 +293,26 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     func textDidChange(_ notification: Notification) {
+        updatePlaceholder()
+        guard !input.isComposing else { return }
         session.touch()
         refreshQuery()
         if input.isPasting, !input.hasMarkedText() { submitQuery() }
     }
 
+    private func compositionChanged() {
+        updatePlaceholder()
+        guard !input.isComposing, source != lastQueriedText else { return }
+        session.touch()
+        refreshQuery()
+    }
+
+    private func updatePlaceholder() {
+        placeholder.isHidden = input.isComposing || !input.string.isEmpty
+    }
+
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        if commandSelector == #selector(NSResponder.insertNewline(_:)), !textView.hasMarkedText() {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)), !input.isComposing {
             if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                 textView.insertText("\n", replacementRange: textView.selectedRange())
             } else if !source.isEmpty {
@@ -282,7 +321,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
             }
             return true
         }
-        if commandSelector == #selector(NSResponder.cancelOperation(_:)), !textView.hasMarkedText() {
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)), !input.isComposing {
             dismiss(restoreFocus: true)
             return true
         }
@@ -291,7 +330,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     private func installLanguageMenu() {
         language.removeAllItems()
-        language.addItem(withTitle: "自动")
+        language.addItem(withTitle: "自")
         let automatic = language.menu?.addItem(
             withTitle: "自动（优先\(session.settings.primary.name)）", action: #selector(changeLanguage(_:)), keyEquivalent: ""
         )
@@ -317,7 +356,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     private func submitQuery() {
-        guard dictionaryResult.groups.isEmpty else { return }
+        guard !input.isComposing, dictionaryResult.rows.isEmpty else { return }
         generate(.original)
     }
 
@@ -331,13 +370,14 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         output = nil
         displayedTone = .original
         let text = source
+        lastQueriedText = text
         if text.isEmpty {
             direction = nil
             dictionaryResult = DictionaryResult(entries: [])
         } else {
             let currentDirection = session.direction(for: text, dictionary: dictionary)
             direction = currentDirection
-            dictionaryResult = DictionaryResult(entries: dictionary.lookup(text, direction: currentDirection))
+            dictionaryResult = dictionary.search(text, direction: currentDirection)
             if currentDirection.isAlreadyInTarget { output = text }
         }
         render()
@@ -417,21 +457,22 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private func render() {
         let target = session.selectedTarget
         let alreadyInTarget = direction?.isAlreadyInTarget == true
-        language.item(at: 0)?.title = target?.label ?? "自动"
+        language.item(at: 0)?.title = target?.label ?? "自"
         language.setAccessibilityLabel("目标语言（\(target?.name ?? "自动")）")
+        language.toolTip = target.map { "目标语言 \($0.name)" } ?? "自动识别语言，可指定目标语言"
         for item in language.itemArray {
             item.state = (item.representedObject as? String) == (target?.rawValue ?? "") ? .on : .off
         }
-        placeholder.isHidden = !input.string.isEmpty
+        updatePlaceholder()
         directionLabel.stringValue = direction?.label ?? ""
         directionLabel.isHidden = direction == nil
         retryButton.isHidden = failedTone == nil || pendingTone != nil
-        copyButton.isHidden = output == nil && dictionaryResult.groups.isEmpty
+        copyButton.isHidden = output == nil && dictionaryResult.rows.isEmpty
         toneMenu.isHidden = output == nil || alreadyInTarget
         toneMenu.isEnabled = pendingTone == nil
         toneMenu.selectItem(at: Tone.allCases.firstIndex(of: pendingTone ?? displayedTone) ?? 0)
         info.stringValue = errorMessage ?? (pendingTone != nil ? "翻译中…" :
-            (alreadyInTarget ? "已是目标语" : (output != nil ? "" : (dictionaryResult.groups.isEmpty ? "↵ 翻译" : "本地词典"))))
+            (alreadyInTarget ? "已是目标语" : (output != nil ? "" : (dictionaryResult.rows.isEmpty ? "↵ 翻译" : "本地词典"))))
         info.toolTip = info.stringValue
         info.textColor = errorMessage == nil ? .secondaryLabelColor : .systemRed
 
@@ -441,16 +482,21 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
                 .font: NSFont.systemFont(ofSize: 15), .foregroundColor: NSColor.labelColor
             ]))
         } else {
-            for (index, group) in dictionaryResult.groups.enumerated() {
+            if let note = dictionaryResult.formNote {
+                content.append(NSAttributedString(string: note + "\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor
+                ]))
+            }
+            for (index, row) in dictionaryResult.rows.enumerated() {
                 if index > 0 { content.append(NSAttributedString(string: "\n")) }
-                if let part = group.partOfSpeech {
-                    content.append(NSAttributedString(string: part + "  ", attributes: [
-                        .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.secondaryLabelColor
-                    ]))
-                }
-                content.append(NSAttributedString(string: group.meanings.joined(separator: "、"), attributes: [
+                content.append(NSAttributedString(string: row.meaning, attributes: [
                     .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor
                 ]))
+                if !row.partsOfSpeech.isEmpty {
+                    content.append(NSAttributedString(string: "  " + row.partsOfSpeech.joined(separator: "、"), attributes: [
+                        .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor
+                    ]))
+                }
             }
         }
         let resultChanged = result.textStorage?.isEqual(to: content) == false
@@ -460,7 +506,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     private func layout(resultContent: NSAttributedString) {
-        let languageWidth: CGFloat = (session.selectedTarget?.label.count ?? 2) > 1 ? 72 : 49
+        let languageWidth: CGFloat = (session.selectedTarget?.label.count ?? 1) > 1 ? 66 : 44
         let inputX = 18 + languageWidth
         let inputWidth = width - inputX - 46
         let contentWidth = width - padding * 2

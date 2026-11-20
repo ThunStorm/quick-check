@@ -31,18 +31,41 @@ enum Checks {
         try check(session.direction(for: "てがみ", dictionary: dictionary) == ja, "Kana in automatic mode")
         try check(session.direction(for: "love", dictionary: dictionary) == en, "Short English word → Chinese")
         let love = DictionaryResult(entries: dictionary.lookup("love", direction: en))
-        try check(love.plainText == "名词  爱意、爱情、喜爱\n动词  爱、热爱、喜欢",
-                  "Compact grouped, reviewed meanings for love")
+        try check(love.rows.count == 6 && love.rows.first?.plainText == "爱意  名词"
+                  && love.rows.last?.plainText == "喜欢  动词", "One result per gloss, with part of speech")
         let possessive = session.direction(for: "我的。", dictionary: dictionary)
         try check(possessive == zhEn, "Possessive phrase gets the default second language")
         let mine = DictionaryResult(entries: dictionary.lookup("我的。", direction: possessive))
-        try check(mine.plainText == "限定词  my\n代词  mine", "Possessive phrase has offline equivalents")
+        try check(mine.plainText == "my  限定词\nmine  代词", "Possessive phrase has offline equivalents")
         let repeated = DictionaryResult(entries: [
             DictionaryEntry(headword: "宠", detail: "寵 · chong3", meaning: "宠"),
             DictionaryEntry(headword: "宠", detail: "chong3", meaning: "宠"),
             DictionaryEntry(headword: "起きる", detail: "", meaning: "动词  起床；起立\n动词  起床；醒来")
         ])
-        try check(repeated.plainText == "宠\n动词  起床、起立、醒来", "Duplicate glosses, headers and parts of speech")
+        try check(repeated.plainText == "宠\n起床  动词\n起立  动词\n醒来  动词", "Deduplicated glosses and row labels")
+        let hope = dictionary.search("希望", direction: zhEn)
+        try check(hope.rows.map(\.meaning) == ["hope", "wish"]
+                  && hope.rows.allSatisfy { $0.partsOfSpeech == ["动词", "名词"] }, "Reviewed equivalents for 希望")
+        let rawGloss = DictionaryResult(entries: [
+            DictionaryEntry(headword: "希望", detail: "", meaning: "to hope, a hope, a wish / to look for")
+        ], target: .english)
+        try check(rawGloss.plainText == "hope  动词、名词\nwish  名词\nto look for", "Strip single-word gloss articles and preserve phrases")
+
+        for form in ["swam", "swum", "swimed", "swimmed"] {
+            let direction = session.direction(for: form, dictionary: dictionary)
+            let result = dictionary.search(form, direction: direction)
+            try check(direction == en && result.rows.first?.meaning == "游泳", "Offline swim lookup for \(form)")
+            try check(result.formNote?.contains("过去式 swam · 过去分词 swum") == true, "Forms for \(form)")
+            try check(result.formNote?.hasPrefix("拼写更正") == form.hasSuffix("ed"), "Correction is labeled for \(form)")
+        }
+        try check(dictionary.search("was written", direction: en).formNote?.contains("被动形式 was written") == true,
+                  "Passive participle lookup")
+        try check(dictionary.search("was wrote", direction: en).formNote?.contains("拼写更正 · was written") == true,
+                  "Past form in a passive phrase corrects to the participle")
+        try check(dictionary.search("walked", direction: en).formNote?.contains("原形 walk") == true,
+                  "System lemmatizer handles regular past tense")
+        try check(dictionary.search("The article was written yesterday.", direction: en).rows.isEmpty,
+                  "Do not collapse a whole sentence into a dictionary word")
 
         session.select(.japanese, at: now)
         try check(session.direction(for: "收据", dictionary: dictionary) == zhJa, "Chinese → selected Japanese")

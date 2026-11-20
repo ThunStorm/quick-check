@@ -180,6 +180,9 @@ struct LookupSession {
             if japanese { return .japanese }
         }
 
+        if letters.allSatisfy({ $0.isASCII }), dictionary.englishInflection(text) != nil {
+            return .english
+        }
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(sample)
         let ranked = recognizer.languageHypotheses(withMaximum: 3)
