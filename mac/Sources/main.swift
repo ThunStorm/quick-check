@@ -1,7 +1,9 @@
 import AppKit
+import OSLog
 
 @MainActor
-private final class QuickCheckApp: NSObject, NSApplicationDelegate {
+private final class QuickCheckApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private let logger = Logger(subsystem: "com.thunstorm.quickcheck", category: "MenuBar")
     private var status: NSStatusItem?
     private var controller: PanelController?
 
@@ -16,20 +18,40 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
         guard let button = item.button else { return }
         let symbol = NSImage(systemSymbolName: "text.magnifyingglass", accessibilityDescription: "Quick Check")
             ?? NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
-        // Draw the symbol in the title so AppKit uses the text button's layout.
-        if let image = symbol?.withSymbolConfiguration(.init(pointSize: 17, weight: .semibold)) ?? symbol {
-            let attachment = NSTextAttachment()
-            attachment.image = image
-            attachment.bounds = NSRect(origin: NSPoint(x: 0, y: -3), size: image.size)
-            button.attributedTitle = NSAttributedString(attachment: attachment)
+        if let symbol {
+            symbol.isTemplate = true
+            button.image = symbol
         } else {
             button.title = "⌕"
         }
         button.toolTip = "Quick Check"
         button.setAccessibilityLabel("Quick Check")
-        button.action = #selector(toggle)
-        button.target = self
+
+        let menu = NSMenu(title: "Quick Check")
+        let search = menu.addItem(withTitle: "打开 Quick Check", action: #selector(openSearchFromMenu), keyEquivalent: "")
+        search.target = self
+        menu.delegate = self
+        item.menu = menu
         status = item
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        logger.notice("System status menu opened")
+        // Release native tracking before placing a key window under the status item.
+        RunLoop.main.perform(inModes: [.eventTracking, .default]) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.status?.menu?.cancelTrackingWithoutAnimation()
+            }
+        }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        logger.notice("System status menu closed")
+        showSearch(anchoredToStatusItem: true)
+    }
+
+    @objc private func openSearchFromMenu() {
+        showSearch(anchoredToStatusItem: true)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -44,16 +66,9 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
         return controller
     }
 
-    private func showSearch() {
+    private func showSearch(anchoredToStatusItem: Bool = false) {
         DispatchQueue.main.async { [weak self] in
-            self?.lookupController()?.show()
-        }
-    }
-
-    @objc private func toggle() {
-        // Let AppKit finish tracking the status item before moving keyboard focus.
-        DispatchQueue.main.async { [weak self] in
-            self?.lookupController()?.toggle()
+            self?.lookupController()?.show(anchoredToStatusItem: anchoredToStatusItem)
         }
     }
 

@@ -59,10 +59,6 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     private var source: String { input.string.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    func toggle() {
-        if panel.isVisible { dismiss(restoreFocus: true) } else { show(anchoredToStatusItem: true) }
-    }
-
     func show(anchoredToStatusItem: Bool = false) {
         let wasVisible = panel.isVisible
         if !wasVisible { previousApp = NSWorkspace.shared.frontmostApplication }
