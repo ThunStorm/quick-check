@@ -325,7 +325,11 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
             } catch {
                 guard let self, !Task.isCancelled, current == self.generation else { return }
                 self.failedTone = tone
-                self.errorMessage = (error as? TranslationError)?.localizedDescription ?? "连接失败，请检查网络或接口地址。"
+                if (error as? URLError)?.code == .timedOut {
+                    self.errorMessage = "翻译超时，请重试。"
+                } else {
+                    self.errorMessage = (error as? TranslationError)?.localizedDescription ?? "连接失败，请检查网络或接口地址。"
+                }
             }
             guard let self, current == self.generation else { return }
             self.request = nil

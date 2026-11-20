@@ -143,8 +143,8 @@ enum TranslationClient {
 
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 60
+        configuration.timeoutIntervalForRequest = 75
+        configuration.timeoutIntervalForResource = 120
         configuration.urlCache = nil
         return URLSession(configuration: configuration, delegate: NoRedirect(), delegateQueue: nil)
     }()
