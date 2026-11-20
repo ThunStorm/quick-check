@@ -14,10 +14,12 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private let logger = Logger(subsystem: "com.thunstorm.quickcheck", category: "MenuBar")
     private let width: CGFloat = 390
     private let padding: CGFloat = 16
+    private let cornerRadius: CGFloat = 22
     private let panel = LookupPanel(
         contentRect: NSRect(x: 0, y: 0, width: 390, height: 62),
         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true
     )
+    private let materialContainer = NSView()
     private let surface = NSView()
     private let inputScroll = NSScrollView()
     private let input = NSTextView()
@@ -113,7 +115,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         panel.escape = { [weak self] in self?.dismiss(restoreFocus: true) }
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        panel.hasShadow = false
         panel.level = .floating
         panel.hidesOnDeactivate = false
         panel.isMovable = false
@@ -121,6 +123,12 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.title = "Quick Check"
 
+        // Clip the whole material, including its backing, to the visible panel shape.
+        materialContainer.frame = panel.contentView?.bounds ?? NSRect(origin: .zero, size: panel.frame.size)
+        materialContainer.wantsLayer = true
+        materialContainer.layer?.cornerRadius = cornerRadius
+        materialContainer.layer?.masksToBounds = true
+        panel.contentView = materialContainer
         updateSurface()
         prepareText(input, scroll: inputScroll, editable: true, font: .systemFont(ofSize: 15))
         prepareText(result, scroll: resultScroll, editable: false, font: .systemFont(ofSize: 14))
@@ -174,33 +182,32 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     @objc private func updateSurface() {
-        let frame = panel.contentView?.bounds ?? panel.frame
+        let frame = materialContainer.bounds
+        let material: NSView
         surface.removeFromSuperview()
-        surface.frame = NSRect(origin: .zero, size: frame.size)
+        surface.frame = frame
         surface.autoresizingMask = [.width, .height]
         if NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency {
             let solid = NSView(frame: surface.frame)
             solid.wantsLayer = true
-            solid.layer?.cornerRadius = 22
             solid.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
             solid.addSubview(surface)
-            panel.contentView = solid
+            material = solid
         } else if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView(frame: surface.frame)
-            glass.cornerRadius = 22
+            glass.cornerRadius = cornerRadius
             glass.contentView = surface
-            panel.contentView = glass
+            material = glass
         } else {
             let effect = NSVisualEffectView(frame: surface.frame)
             effect.material = .popover
             effect.blendingMode = .behindWindow
             effect.state = .active
-            effect.wantsLayer = true
-            effect.layer?.cornerRadius = 22
-            effect.layer?.masksToBounds = true
             effect.addSubview(surface)
-            panel.contentView = effect
+            material = effect
         }
+        material.autoresizingMask = [.width, .height]
+        materialContainer.subviews = [material]
         if panel.isVisible { panel.makeFirstResponder(input) }
     }
 
