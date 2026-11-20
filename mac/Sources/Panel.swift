@@ -63,7 +63,6 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     private func show() {
-        guard statusButton?.window != nil else { return }
         previousApp = NSWorkspace.shared.frontmostApplication
         if session.touch() { refreshQuery() }
         updateSurface()
@@ -396,11 +395,17 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         let extraHeight: CGFloat = expanded ? 37 + (resultHeight > 0 ? resultHeight + 6 : 0) : 0
         let height = inputTop + inputHeight + 14 + extraHeight
 
-        if let button = statusButton, let window = button.window {
-            let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
-            let screenBounds = (window.screen ?? NSScreen.main)?.visibleFrame ?? window.frame
-            let x = min(max(anchor.midX - width / 2, screenBounds.minX + 8), screenBounds.maxX - width - 8)
-            panel.setFrame(NSRect(x: x, y: anchor.minY - height - 3, width: width, height: height), display: true)
+        let statusWindow = statusButton?.window
+        if let screen = statusWindow?.screen ?? NSScreen.main {
+            let bounds = screen.visibleFrame
+            // The status window already has its position in screen coordinates.
+            let anchor = statusWindow.flatMap { window in
+                screen.frame.intersects(window.frame) ? window.frame : nil
+            }
+            let centerX = anchor?.midX ?? bounds.midX
+            let x = min(max(centerX - width / 2, bounds.minX + 8), bounds.maxX - width - 8)
+            let top = min(anchor?.minY ?? bounds.maxY, bounds.maxY)
+            panel.setFrame(NSRect(x: x, y: top - height - 3, width: width, height: height), display: true)
         }
         surface.frame = NSRect(x: 0, y: 0, width: width, height: height)
         let rowY = height - inputTop - inputHeight

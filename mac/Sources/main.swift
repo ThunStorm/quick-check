@@ -7,23 +7,32 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenu()
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        let item = NSStatusBar.system.statusItem(withLength: 40)
         guard let button = item.button else { return }
-        button.image = NSImage(systemSymbolName: "character.book.closed", accessibilityDescription: "Quick Check")
-            ?? NSImage(systemSymbolName: "book.closed", accessibilityDescription: "Quick Check")
+        let symbol = NSImage(systemSymbolName: "text.magnifyingglass", accessibilityDescription: "Quick Check")
+            ?? NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
+        if let image = symbol?.withSymbolConfiguration(.init(pointSize: 17, weight: .semibold)) {
+            button.image = image
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleNone
+        } else {
+            button.title = "QC"
+        }
         button.toolTip = "Quick Check"
         button.setAccessibilityLabel("Quick Check")
-        button.action = #selector(toggle)
+        button.action = #selector(toggle(_:))
         button.target = self
         status = item
     }
 
-    @objc private func toggle() {
-        if controller == nil, let button = status?.button,
-           let url = Bundle.main.url(forResource: "dictionary", withExtension: "sqlite3") {
+    @objc private func toggle(_ button: NSStatusBarButton) {
+        if controller == nil, let url = Bundle.main.url(forResource: "dictionary", withExtension: "sqlite3") {
             controller = PanelController(statusButton: button, dictionary: LocalDictionary(url: url))
         }
-        controller?.toggle()
+        // Let AppKit finish tracking the status item before moving keyboard focus.
+        DispatchQueue.main.async { [weak self] in
+            self?.controller?.toggle()
+        }
     }
 
     private func installMenu() {
