@@ -1,5 +1,6 @@
 import AppKit
 import OSLog
+import QuartzCore
 
 private final class LookupPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -15,10 +16,14 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private let width: CGFloat = 390
     private let padding: CGFloat = 16
     private let cornerRadius: CGFloat = 22
+    private let shadowMargin: CGFloat = 18
     private let panel = LookupPanel(
         contentRect: NSRect(x: 0, y: 0, width: 390, height: 62),
         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true
     )
+    private let windowSurface = NSView()
+    private let outlineShadow = CALayer()
+    private let shadowMask = CAShapeLayer()
     private let materialContainer = NSView()
     private let surface = NSView()
     private let inputScroll = NSScrollView()
@@ -102,8 +107,10 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private func installMonitors() {
         let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) {
             [weak self] event in
-            if let self, event.window !== self.panel && event.window !== self.statusButton?.window {
-                self.dismiss(restoreFocus: false)
+            if let self, event.window !== self.statusButton?.window {
+                let insidePanel = event.window === self.panel
+                    && self.materialContainer.frame.contains(event.locationInWindow)
+                if !insidePanel { self.dismiss(restoreFocus: false) }
             }
             return event
         }
@@ -123,12 +130,23 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         panel.isReleasedWhenClosed = false
         panel.title = "Quick Check"
 
-        // Clip the whole material, including its backing, to the visible panel shape.
-        materialContainer.frame = panel.contentView?.bounds ?? NSRect(origin: .zero, size: panel.frame.size)
+        windowSurface.frame = panel.contentView?.bounds ?? NSRect(origin: .zero, size: panel.frame.size)
+        windowSurface.wantsLayer = true
+        outlineShadow.shadowColor = NSColor.black.cgColor
+        outlineShadow.shadowOpacity = 0.23
+        outlineShadow.shadowRadius = 6
+        outlineShadow.shadowOffset = CGSize(width: 0, height: -3)
+        shadowMask.fillRule = .evenOdd
+        outlineShadow.mask = shadowMask
+        windowSurface.layer?.addSublayer(outlineShadow)
+
+        materialContainer.frame = windowSurface.bounds
         materialContainer.wantsLayer = true
         materialContainer.layer?.cornerRadius = cornerRadius
         materialContainer.layer?.masksToBounds = true
-        panel.contentView = materialContainer
+        materialContainer.layer?.borderWidth = 0.75
+        windowSurface.addSubview(materialContainer)
+        panel.contentView = windowSurface
         updateSurface()
         prepareText(input, scroll: inputScroll, editable: true, font: .systemFont(ofSize: 15))
         prepareText(result, scroll: resultScroll, editable: false, font: .systemFont(ofSize: 14))
@@ -208,6 +226,9 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         }
         material.autoresizingMask = [.width, .height]
         materialContainer.subviews = [material]
+        panel.effectiveAppearance.performAsCurrentDrawingAppearance {
+            materialContainer.layer?.borderColor = NSColor.separatorColor.cgColor
+        }
         if panel.isVisible { panel.makeFirstResponder(input) }
     }
 
@@ -411,6 +432,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         let inputTop: CGFloat = 14
         let extraHeight: CGFloat = expanded ? 37 + (resultHeight > 0 ? resultHeight + 6 : 0) : 0
         let height = inputTop + inputHeight + 14 + extraHeight
+        let frameSize = NSSize(width: width + 2 * shadowMargin, height: height + 2 * shadowMargin)
 
         let statusWindow = anchorToStatusItem ? statusButton?.window : nil
         if let screen = statusWindow?.screen ?? NSScreen.main ?? NSScreen.screens.first {
@@ -420,10 +442,12 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
                 screen.frame.intersects(window.frame) ? window.frame : nil
             }
             let centerX = anchor?.midX ?? bounds.midX
-            let x = min(max(centerX - width / 2, bounds.minX + 8), bounds.maxX - width - 8)
+            let x = min(max(centerX - frameSize.width / 2, bounds.minX), bounds.maxX - frameSize.width)
             let top = anchor.map { min($0.minY, bounds.maxY) - 3 } ?? bounds.maxY - 64
-            panel.setFrame(NSRect(x: x, y: top - height, width: width, height: height), display: true)
+            panel.setFrame(NSRect(x: x, y: top - height - shadowMargin,
+                                  width: frameSize.width, height: frameSize.height), display: false)
         }
+        layoutOutline(width: width, height: height)
         surface.frame = NSRect(x: 0, y: 0, width: width, height: height)
         let rowY = height - inputTop - inputHeight
         language.frame = NSRect(x: 13, y: height - 39, width: 49, height: 26)
@@ -438,6 +462,24 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         resultScroll.hasVerticalScroller = resultHeight >= 236
         footer.isHidden = !expanded
         footer.frame = NSRect(x: padding, y: 12, width: contentWidth, height: 24)
+    }
+
+    private func layoutOutline(width: CGFloat, height: CGFloat) {
+        materialContainer.frame = NSRect(x: shadowMargin, y: shadowMargin, width: width, height: height)
+        let roundedEdge = CGPath(roundedRect: materialContainer.frame, cornerWidth: cornerRadius,
+                                 cornerHeight: cornerRadius, transform: nil)
+        // Keep the shadow outside the glass so it cannot tint the translucent interior.
+        let exterior = CGMutablePath()
+        exterior.addRect(windowSurface.bounds)
+        exterior.addPath(roundedEdge)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        outlineShadow.frame = windowSurface.bounds
+        outlineShadow.shadowPath = roundedEdge
+        shadowMask.frame = outlineShadow.bounds
+        shadowMask.path = exterior
+        CATransaction.commit()
     }
 
     @objc private func showMenu(_ sender: NSButton) {
