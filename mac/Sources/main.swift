@@ -20,7 +20,7 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
         let symbol = NSImage(systemSymbolName: "text.magnifyingglass", accessibilityDescription: "Quick Check")
             ?? NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
         if let symbol {
-            let image = symbol.withSymbolConfiguration(.init(pointSize: 19, weight: .semibold)) ?? symbol
+            let image = symbol.withSymbolConfiguration(.init(pointSize: 17, weight: .regular)) ?? symbol
             image.isTemplate = true
             button.image = image
         } else {

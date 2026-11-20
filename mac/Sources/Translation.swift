@@ -25,7 +25,7 @@ struct TranslationInput: Encodable {
     func encode(to encoder: Encoder) throws {
         var payload = encoder.container(keyedBy: CodingKeys.self)
         try payload.encode(source, forKey: .source)
-        try payload.encode(direction.source.promptName, forKey: .from)
+        try payload.encode(direction.source?.promptName ?? "Auto-detect", forKey: .from)
         try payload.encode(direction.target.promptName, forKey: .to)
         try payload.encode(tone.instruction, forKey: .tone)
     }
@@ -227,8 +227,8 @@ enum TranslationClient {
         let encoder = JSONEncoder()
         let payload = String(decoding: try encoder.encode(input), as: UTF8.self)
         let instruction = """
-            You are a professional translator. Translate the JSON text field from
-            \(input.direction.source.promptName) into \(input.direction.target.promptName).
+            You are a professional translator. Translate the JSON text field into
+            \(input.direction.target.promptName). Use the indicated source language, or identify it when set to Auto-detect.
             Write idiomatic \(input.direction.target.promptName) throughout, including greetings,
             thanks, and closings. Retain proper names or identifiers where appropriate. Preserve
             the original intent, facts, numbers, and paragraph breaks. Adjust register as requested

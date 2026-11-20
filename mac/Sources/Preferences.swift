@@ -189,7 +189,7 @@ final class LanguagePreferences: NSObject {
 
         let alert = NSAlert()
         alert.messageText = "语言设置"
-        alert.informativeText = "两个语言之间自动判断翻译方向。临时切换的第二语言闲置五分钟后恢复默认。"
+        alert.informativeText = "自动模式优先译成主语言，主语言原文译成默认第二语言。手动指定目标语后，闲置五分钟恢复自动。"
         alert.accessoryView = form
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")

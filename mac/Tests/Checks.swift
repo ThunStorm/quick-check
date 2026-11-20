@@ -16,25 +16,44 @@ enum Checks {
         let dictionary = LocalDictionary(url: URL(fileURLWithPath: arguments[1]))
         var session = LookupSession()
         let now = Date(timeIntervalSince1970: 100)
-        let en = Direction(source: .chinese, target: .english)
-        let ja = Direction(source: .chinese, target: .japanese)
+        let zhEn = Direction(source: .chinese, target: .english)
+        let en = Direction(source: .english, target: .chinese)
+        let ja = Direction(source: .japanese, target: .chinese)
+        let zhJa = Direction(source: .chinese, target: .japanese)
 
-        try check(session.direction(for: "草稿", dictionary: dictionary).0 == en, "Chinese → English")
-        try check(dictionary.lookup("草稿", direction: en).contains { $0.meaning.contains("draft") }, "Chinese gloss")
-        try check(session.direction(for: "deadline", dictionary: dictionary).0 == en.reversed, "English → Chinese")
-        try check(dictionary.lookup(" ＤＥＡＤＬＩＮＥ ", direction: en.reversed).first?.meaning.contains("截止") == true,
+        try check(session.direction(for: "草稿", dictionary: dictionary) == zhEn, "Chinese → English in automatic mode")
+        try check(dictionary.lookup("草稿", direction: zhEn).contains { $0.meaning.contains("draft") }, "Chinese gloss")
+        try check(session.direction(for: "deadline", dictionary: dictionary) == en, "English → Chinese in automatic mode")
+        try check(dictionary.lookup(" ＤＥＡＤＬＩＮＥ ", direction: en).first?.meaning.contains("截止") == true,
                   "English lookup normalizes width, case and whitespace")
+        try check(session.direction(for: "領収書", dictionary: dictionary) == ja, "Japanese Han spelling → Chinese")
+        try check(dictionary.lookup("領収書", direction: ja).first?.meaning.contains("收据") == true, "Japanese gloss")
+        try check(session.direction(for: "てがみ", dictionary: dictionary) == ja, "Kana in automatic mode")
+        try check(session.direction(for: "love", dictionary: dictionary) == en, "Short English word → Chinese")
+        let love = DictionaryResult(entries: dictionary.lookup("love", direction: en))
+        try check(love.plainText == "名词  爱意、爱情、喜爱\n动词  爱、热爱、喜欢",
+                  "Compact grouped, reviewed meanings for love")
+        let possessive = session.direction(for: "我的。", dictionary: dictionary)
+        try check(possessive == zhEn, "Possessive phrase gets the default second language")
+        let mine = DictionaryResult(entries: dictionary.lookup("我的。", direction: possessive))
+        try check(mine.plainText == "限定词  my\n代词  mine", "Possessive phrase has offline equivalents")
+        let repeated = DictionaryResult(entries: [
+            DictionaryEntry(headword: "宠", detail: "寵 · chong3", meaning: "宠"),
+            DictionaryEntry(headword: "宠", detail: "chong3", meaning: "宠"),
+            DictionaryEntry(headword: "起きる", detail: "", meaning: "动词  起床；起立\n动词  起床；醒来")
+        ])
+        try check(repeated.plainText == "宠\n动词  起床、起立、醒来", "Duplicate glosses, headers and parts of speech")
+
         session.select(.japanese, at: now)
-        try check(session.direction(for: "收据", dictionary: dictionary).0 == ja, "Chinese → Japanese")
-        try check(dictionary.lookup("收据", direction: ja).first?.headword == "領収書", "Japanese headword")
-        try check(session.direction(for: "領収書", dictionary: dictionary).0 == ja.reversed, "Japanese → Chinese")
-        try check(dictionary.lookup("領収書", direction: ja.reversed).first?.meaning.contains("收据") == true,
-                  "Japanese gloss")
-        try check(session.direction(for: "てがみ", dictionary: dictionary).0 == ja.reversed, "Kana")
-        try check(session.direction(for: "手紙", dictionary: dictionary).ambiguous, "Shared Han spelling")
-        try check(!session.touch(at: now.addingTimeInterval(299)) && session.second == .japanese, "Recent language")
-        try check(session.touch(at: now.addingTimeInterval(599)) && session.second == .english, "Idle language reset")
-        try check(dictionary.lookup(String(repeating: "long ", count: 80), direction: en).isEmpty, "Long input")
+        try check(session.direction(for: "收据", dictionary: dictionary) == zhJa, "Chinese → selected Japanese")
+        try check(dictionary.lookup("收据", direction: zhJa).first?.headword == "領収書", "Japanese headword")
+        try check(session.direction(for: "てがみ", dictionary: dictionary).isAlreadyInTarget,
+                  "Selecting Japanese keeps Japanese as target even for Japanese input")
+        try check(session.direction(for: "Where is the closest train station?", dictionary: dictionary)
+                  == Direction(source: .english, target: .japanese), "English → selected Japanese without source constraint")
+        try check(!session.touch(at: now.addingTimeInterval(299)) && session.selectedTarget == .japanese, "Recent target")
+        try check(session.touch(at: now.addingTimeInterval(599)) && session.selectedTarget == nil, "Idle reset to automatic")
+        try check(dictionary.lookup(String(repeating: "long ", count: 80), direction: zhEn).isEmpty, "Long input")
 
         let suite = "com.thunstorm.quickcheck.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -45,24 +64,27 @@ enum Checks {
         try check(LanguageSettings.load(from: defaults) == settings, "Language settings round trip")
         try check(LanguageSettings(primary: .english).defaultSecond == .chinese, "Languages must be distinct")
         var multilingual = LookupSession(settings: settings)
-        multilingual.select(.spanish, at: now)
-        multilingual.select(.french, at: now)
-        try check(multilingual.second == .spanish, "Temporary language cannot duplicate the primary")
-        let frenchSpanish = Direction(source: .french, target: .spanish)
-        try check(multilingual.direction(for: "Je voudrais réserver une table pour ce soir.", dictionary: dictionary).0
-                  == frenchSpanish, "French to Spanish when both use Latin script")
-        try check(multilingual.direction(for: "¿Dónde está la estación de tren más cercana?", dictionary: dictionary).0
-                  == frenchSpanish.reversed, "Spanish to French when both use Latin script")
-        try check(multilingual.touch(at: now.addingTimeInterval(300)) && multilingual.second == .korean,
-                  "Idle reset restores the configured second language")
         let frenchKorean = Direction(source: .french, target: .korean)
-        try check(multilingual.direction(for: "기차는 내일 아침에 출발합니다.", dictionary: dictionary).0
-                  == frenchKorean.reversed, "Hangul detection with a non-Chinese primary")
+        let frenchText = "Je voudrais réserver une table pour ce soir."
+        let spanishText = "¿Dónde está la estación de tren más cercana?"
+        try check(multilingual.direction(for: frenchText, dictionary: dictionary) == frenchKorean,
+                  "Primary-language input uses the preferred second language")
+        try check(multilingual.direction(for: spanishText, dictionary: dictionary) == Direction(source: .spanish, target: .french),
+                  "An unselected foreign source is still detected")
+        multilingual.select(.french, at: now)
+        try check(multilingual.direction(for: frenchText, dictionary: dictionary).isAlreadyInTarget,
+                  "The configured primary is also a valid explicit target")
+        multilingual.select(.spanish, at: now)
+        try check(multilingual.direction(for: frenchText, dictionary: dictionary) == Direction(source: .french, target: .spanish),
+                  "French → selected Spanish")
+        try check(multilingual.direction(for: spanishText, dictionary: dictionary).isAlreadyInTarget,
+                  "The target stays Spanish even when the input is Spanish")
+        try check(multilingual.touch(at: now.addingTimeInterval(300)) && multilingual.selectedTarget == nil,
+                  "Idle reset restores automatic mode")
+        try check(multilingual.direction(for: "기차는 내일 아침에 출발합니다.", dictionary: dictionary)
+                  == Direction(source: .korean, target: .french), "Hangul detection with a non-Chinese primary")
         try check(!frenchKorean.hasLocalDictionary && dictionary.lookup("train", direction: frenchKorean).isEmpty,
                   "Unsupported local language pairs fall through to online translation")
-        let englishChinese = LookupSession(settings: LanguageSettings(primary: .english, defaultSecond: .chinese))
-        try check(englishChinese.direction(for: "草稿", dictionary: dictionary).0 == en,
-                  "An English primary still supports Chinese-to-English dictionary lookup")
 
         let copied = """
             {"baseURL":"http://127.0.0.1:8317/v1","apiKey":"lmx_test_example","model":"codex/sample-model"}
@@ -123,10 +145,10 @@ enum Checks {
         let provider = try ProviderSettings(baseURL: arguments[2] + "/v1/", model: "mock", apiKey: "test-only")
         let text = "我这边都行，你定吧。"
         let original = try await TranslationClient.translate(
-            TranslationInput(source: text, direction: en, tone: .original), using: provider
+            TranslationInput(source: text, direction: zhEn, tone: .original), using: provider
         )
         let formal = try await TranslationClient.translate(
-            TranslationInput(source: text, direction: en, tone: .formal), using: provider
+            TranslationInput(source: text, direction: zhEn, tone: .formal), using: provider
         )
         try check(original == "Whatever works for you." && formal == "Please choose whichever works best for you.",
                   "Translation and tone regeneration")
@@ -141,7 +163,7 @@ enum Checks {
             let failure = try ProviderSettings(baseURL: arguments[2] + "/v1", model: model, apiKey: "test-only")
             do {
                 _ = try await TranslationClient.translate(
-                    TranslationInput(source: text, direction: en, tone: .original), using: failure
+                    TranslationInput(source: text, direction: zhEn, tone: .original), using: failure
                 )
                 throw CheckFailure(reason: "Expected provider failure for \(model)")
             } catch let error as TranslationError {

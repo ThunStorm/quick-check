@@ -72,8 +72,6 @@ enum Language: String, Codable, CaseIterable {
         return Locale(identifier: "en").localizedString(forLanguageCode: rawValue) ?? rawValue
     }
 
-    fileprivate var isChinese: Bool { self == .chinese || self == .traditionalChinese }
-
     fileprivate var recognitionCode: NLLanguage {
         if self == .chinese { return .simplifiedChinese }
         return NLLanguage(rawValue: rawValue)
@@ -81,16 +79,20 @@ enum Language: String, Codable, CaseIterable {
 }
 
 struct Direction: Equatable {
-    let source: Language
+    let source: Language?
     let target: Language
 
-    var reversed: Self { Self(source: target, target: source) }
-    var label: String { "\(source.label) → \(target.label)" }
-    var key: String { source.rawValue + "-" + target.rawValue }
+    var label: String { "\(source?.label ?? "自动") → \(target.label)" }
+    var key: String { (source?.rawValue ?? "") + "-" + target.rawValue }
+    var isAlreadyInTarget: Bool { source == target }
 
     var hasLocalDictionary: Bool {
-        (source == .chinese && [.english, .japanese].contains(target))
-            || (target == .chinese && [.english, .japanese].contains(source))
+        switch (source, target) {
+        case (.chinese?, .english), (.chinese?, .japanese), (.english?, .chinese), (.japanese?, .chinese):
+            true
+        default:
+            false
+        }
     }
 }
 
@@ -121,72 +123,75 @@ struct LanguageSettings: Equatable {
 struct LookupSession {
     static let idleSeconds: TimeInterval = 5 * 60
     let settings: LanguageSettings
-    private(set) var second: Language
+    private(set) var selectedTarget: Language?
     private var lastActivity: Date?
 
     init(settings: LanguageSettings = .init()) {
         self.settings = settings
-        second = settings.defaultSecond
     }
 
-    mutating func select(_ language: Language, at now: Date = .now) {
-        guard language != settings.primary else { return }
-        second = language
+    mutating func select(_ target: Language?, at now: Date = .now) {
+        selectedTarget = target
         lastActivity = now
     }
 
     @discardableResult
     mutating func touch(at now: Date = .now) -> Bool {
         let expired = lastActivity.map { now.timeIntervalSince($0) >= Self.idleSeconds } ?? false
-        let changed = expired && second != settings.defaultSecond
-        if changed { second = settings.defaultSecond }
+        let changed = expired && selectedTarget != nil
+        if changed { selectedTarget = nil }
         lastActivity = now
         return changed
     }
 
-    func direction(for text: String, dictionary: LocalDictionary) -> (Direction, ambiguous: Bool) {
-        let primary = settings.primary
-        let forward = Direction(source: primary, target: second)
-        let scalars = text.prefix(800).unicodeScalars
-        let kana = scalars.contains { scalar in
-            (0x3041...0x30FF).contains(scalar.value) || (0xFF66...0xFF9F).contains(scalar.value)
-        }
-        if kana, primary == .japanese || second == .japanese {
-            return (primary == .japanese ? forward : forward.reversed, false)
-        }
-        let hangul = scalars.contains { scalar in
+    func direction(for text: String, dictionary: LocalDictionary) -> Direction {
+        let source = identify(text, dictionary: dictionary)
+        let target = selectedTarget ?? (source == settings.primary ? settings.defaultSecond : settings.primary)
+        return Direction(source: source, target: target)
+    }
+
+    private func identify(_ text: String, dictionary: LocalDictionary) -> Language? {
+        let sample = String(text.prefix(800)).precomposedStringWithCompatibilityMapping
+        let letters = sample.unicodeScalars.filter { $0.properties.isAlphabetic }
+        guard !letters.isEmpty else { return nil }
+
+        let kana = letters.filter { scalar in
+            (0x3041...0x3096).contains(scalar.value) || (0x30A1...0x30FA).contains(scalar.value)
+        }.count
+        let hangul = letters.filter { scalar in
             (0x1100...0x11FF).contains(scalar.value) || (0xAC00...0xD7AF).contains(scalar.value)
-        }
-        if hangul, primary == .korean || second == .korean {
-            return (primary == .korean ? forward : forward.reversed, false)
+        }.count
+        let han = letters.filter { scalar in
+            (0x3400...0x9FFF).contains(scalar.value)
+                || (0xF900...0xFAFF).contains(scalar.value)
+                || (0x20000...0x323AF).contains(scalar.value)
+        }.count
+        if kana > 0 && (kana + han) * 2 >= letters.count { return .japanese }
+        if hangul * 2 >= letters.count { return .korean }
+
+        if han == letters.count && han <= 12 {
+            let zhEnglish = Direction(source: .chinese, target: .english)
+            let zhJapanese = Direction(source: .chinese, target: .japanese)
+            let jaChinese = Direction(source: .japanese, target: .chinese)
+            let chinese = !dictionary.lookup(text, direction: zhEnglish).isEmpty
+                || !dictionary.lookup(text, direction: zhJapanese).isEmpty
+            let japanese = !dictionary.lookup(text, direction: jaChinese).isEmpty
+            if chinese { return .chinese }
+            if japanese { return .japanese }
         }
 
-        if primary.isChinese != second.isChinese {
-            let fromChinese = primary.isChinese ? forward : forward.reversed
-            let han = scalars.contains { scalar in
-                (0x3400...0x9FFF).contains(scalar.value)
-                    || (0xF900...0xFAFF).contains(scalar.value)
-                    || (0x20000...0x323AF).contains(scalar.value)
-            }
-            if han, fromChinese.target == .japanese {
-                let chinese = !dictionary.lookup(text, direction: fromChinese).isEmpty
-                let japanese = !dictionary.lookup(text, direction: fromChinese.reversed).isEmpty
-                return (japanese && !chinese ? fromChinese.reversed : fromChinese, chinese == japanese)
-            }
-            if han { return (fromChinese, false) }
-            if fromChinese.target != .japanese, scalars.contains(where: { $0.properties.isAlphabetic }) {
-                return (fromChinese.reversed, false)
-            }
-        }
-
-        guard scalars.contains(where: { $0.properties.isAlphabetic }) else { return (forward, true) }
         let recognizer = NLLanguageRecognizer()
-        recognizer.languageConstraints = [primary.recognitionCode, second.recognitionCode]
-        recognizer.processString(String(text.prefix(800)))
-        let scores = recognizer.languageHypotheses(withMaximum: 2)
-        let firstScore = scores[primary.recognitionCode, default: 0]
-        let secondScore = scores[second.recognitionCode, default: 0]
-        let best = secondScore > firstScore ? forward.reversed : forward
-        return (best, max(firstScore, secondScore) < 0.65 || abs(firstScore - secondScore) < 0.2)
+        recognizer.processString(sample)
+        let ranked = recognizer.languageHypotheses(withMaximum: 3)
+            .sorted { $0.value > $1.value }
+        if let best = ranked.first, best.value >= 0.60 {
+            return Language.allCases.first { $0.recognitionCode == best.key }
+        }
+        if han * 2 >= letters.count { return .chinese }
+        let english = Direction(source: .english, target: .chinese)
+        if letters.allSatisfy({ $0.isASCII }), !dictionary.lookup(text, direction: english).isEmpty {
+            return .english
+        }
+        return nil
     }
 }
