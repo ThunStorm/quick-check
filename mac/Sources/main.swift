@@ -1,9 +1,12 @@
 import AppKit
+import OSLog
 
 @MainActor
 private final class QuickCheckApp: NSObject, NSApplicationDelegate {
+    private let logger = Logger(subsystem: "com.thunstorm.quickcheck", category: "MenuBar")
     private var status: NSStatusItem?
     private var controller: PanelController?
+    private var pendingStatusSearch: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenu()
@@ -12,18 +15,38 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
     }
 
     private func installStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: 40)
+        let item = NSStatusBar.system.statusItem(withLength: 28)
         guard let button = item.button else { return }
         let symbol = NSImage(systemSymbolName: "text.magnifyingglass", accessibilityDescription: "Quick Check")
             ?? NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
-        button.image = symbol?.withSymbolConfiguration(.init(pointSize: 17, weight: .semibold)) ?? symbol
-        button.imagePosition = .imageOnly
-        button.imageScaling = .scaleNone
+        if let symbol {
+            let image = symbol.withSymbolConfiguration(.init(pointSize: 19, weight: .semibold)) ?? symbol
+            image.isTemplate = true
+            button.image = image
+        } else {
+            button.title = "⌕"
+        }
         button.toolTip = "Quick Check"
         button.setAccessibilityLabel("Quick Check")
-        button.action = #selector(toggle)
         button.target = self
+        button.action = #selector(statusButtonPressed)
+        button.sendAction(on: [.leftMouseDown, .rightMouseDown])
         status = item
+    }
+
+    @objc private func statusButtonPressed() {
+        logger.notice("Status button pressed")
+        pendingStatusSearch?.cancel()
+        pendingStatusSearch = Task { [weak self] in
+            // Present after the status button finishes handling the click.
+            let clock = ContinuousClock()
+            let deadline = clock.now + .seconds(1)
+            repeat {
+                try? await Task.sleep(for: .milliseconds(25))
+                guard !Task.isCancelled else { return }
+            } while NSEvent.pressedMouseButtons != 0 && clock.now < deadline
+            self?.lookupController()?.show(anchoredToStatusItem: true)
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -41,13 +64,6 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
     private func showSearch() {
         DispatchQueue.main.async { [weak self] in
             self?.lookupController()?.show()
-        }
-    }
-
-    @objc private func toggle() {
-        // Let AppKit finish tracking the status item before moving keyboard focus.
-        DispatchQueue.main.async { [weak self] in
-            self?.lookupController()?.toggle()
         }
     }
 

@@ -1,4 +1,5 @@
 import AppKit
+import OSLog
 
 private final class LookupPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -10,11 +11,12 @@ private final class LookupPanel: NSPanel {
 
 @MainActor
 final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
+    private let logger = Logger(subsystem: "com.thunstorm.quickcheck", category: "MenuBar")
     private let width: CGFloat = 390
     private let padding: CGFloat = 16
     private let panel = LookupPanel(
         contentRect: NSRect(x: 0, y: 0, width: 390, height: 62),
-        styleMask: [.borderless], backing: .buffered, defer: true
+        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true
     )
     private let surface = NSView()
     private let inputScroll = NSScrollView()
@@ -59,10 +61,6 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     private var source: String { input.string.trimmingCharacters(in: .whitespacesAndNewlines) }
 
-    func toggle() {
-        if panel.isVisible { dismiss(restoreFocus: true) } else { show(anchoredToStatusItem: true) }
-    }
-
     func show(anchoredToStatusItem: Bool = false) {
         let wasVisible = panel.isVisible
         if !wasVisible { previousApp = NSWorkspace.shared.frontmostApplication }
@@ -70,9 +68,12 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         if session.touch() { refreshQuery() }
         updateSurface()
         render()
-        NSApp.activate()
+        if !anchoredToStatusItem { NSApp.activate() }
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(input)
+        if anchoredToStatusItem {
+            logger.notice("Search panel ordered front (visible: \(self.panel.isVisible), key: \(self.panel.isKeyWindow))")
+        }
         if !wasVisible {
             input.setSelectedRange(NSRange(location: 0, length: (input.string as NSString).length))
             installMonitors()
@@ -90,6 +91,9 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        if anchorToStatusItem && panel.isVisible {
+            logger.notice("Search panel resigned key")
+        }
         dismiss(restoreFocus: false)
     }
 
@@ -110,7 +114,8 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.level = .popUpMenu
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
         panel.isMovable = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.isReleasedWhenClosed = false
