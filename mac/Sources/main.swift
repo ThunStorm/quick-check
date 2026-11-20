@@ -16,9 +16,15 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
         guard let button = item.button else { return }
         let symbol = NSImage(systemSymbolName: "text.magnifyingglass", accessibilityDescription: "Quick Check")
             ?? NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
-        button.image = symbol?.withSymbolConfiguration(.init(pointSize: 17, weight: .semibold)) ?? symbol
-        button.imagePosition = .imageOnly
-        button.imageScaling = .scaleNone
+        // Draw the symbol in the title so AppKit uses the text button's layout.
+        if let image = symbol?.withSymbolConfiguration(.init(pointSize: 17, weight: .semibold)) ?? symbol {
+            let attachment = NSTextAttachment()
+            attachment.image = image
+            attachment.bounds = NSRect(origin: NSPoint(x: 0, y: -3), size: image.size)
+            button.attributedTitle = NSAttributedString(attachment: attachment)
+        } else {
+            button.title = "⌕"
+        }
         button.toolTip = "Quick Check"
         button.setAccessibilityLabel("Quick Check")
         button.action = #selector(toggle)
