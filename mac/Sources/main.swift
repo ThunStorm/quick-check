@@ -14,8 +14,11 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: 40)
         guard let button = item.button else { return }
-        button.title = "QC"
-        button.font = .monospacedSystemFont(ofSize: 14, weight: .semibold)
+        let symbol = NSImage(systemSymbolName: "text.magnifyingglass", accessibilityDescription: "Quick Check")
+            ?? NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
+        button.image = symbol?.withSymbolConfiguration(.init(pointSize: 17, weight: .semibold)) ?? symbol
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleNone
         button.toolTip = "Quick Check"
         button.setAccessibilityLabel("Quick Check")
         button.action = #selector(toggle)
