@@ -2,10 +2,11 @@ import AppKit
 import OSLog
 
 @MainActor
-private final class QuickCheckApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
+private final class QuickCheckApp: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.thunstorm.quickcheck", category: "MenuBar")
     private var status: NSStatusItem?
     private var controller: PanelController?
+    private var pendingStatusSearch: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMenu()
@@ -14,44 +15,38 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate, NSMenuDelega
     }
 
     private func installStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: 40)
+        let item = NSStatusBar.system.statusItem(withLength: 28)
         guard let button = item.button else { return }
         let symbol = NSImage(systemSymbolName: "text.magnifyingglass", accessibilityDescription: "Quick Check")
             ?? NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
         if let symbol {
-            symbol.isTemplate = true
-            button.image = symbol
+            let image = symbol.withSymbolConfiguration(.init(pointSize: 19, weight: .semibold)) ?? symbol
+            image.isTemplate = true
+            button.image = image
         } else {
             button.title = "⌕"
         }
         button.toolTip = "Quick Check"
         button.setAccessibilityLabel("Quick Check")
-
-        let menu = NSMenu(title: "Quick Check")
-        let search = menu.addItem(withTitle: "打开 Quick Check", action: #selector(openSearchFromMenu), keyEquivalent: "")
-        search.target = self
-        menu.delegate = self
-        item.menu = menu
+        button.target = self
+        button.action = #selector(statusButtonPressed)
+        button.sendAction(on: [.leftMouseDown, .rightMouseDown])
         status = item
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
-        logger.notice("System status menu opened")
-        // Release native tracking before placing a key window under the status item.
-        RunLoop.main.perform(inModes: [.eventTracking, .default]) { [weak self] in
-            MainActor.assumeIsolated {
-                self?.status?.menu?.cancelTrackingWithoutAnimation()
-            }
+    @objc private func statusButtonPressed() {
+        logger.notice("Status button pressed")
+        pendingStatusSearch?.cancel()
+        pendingStatusSearch = Task { [weak self] in
+            // Present after the status button finishes handling the click.
+            let clock = ContinuousClock()
+            let deadline = clock.now + .seconds(1)
+            repeat {
+                try? await Task.sleep(for: .milliseconds(25))
+                guard !Task.isCancelled else { return }
+            } while NSEvent.pressedMouseButtons != 0 && clock.now < deadline
+            self?.lookupController()?.show(anchoredToStatusItem: true)
         }
-    }
-
-    func menuDidClose(_ menu: NSMenu) {
-        logger.notice("System status menu closed")
-        showSearch(anchoredToStatusItem: true)
-    }
-
-    @objc private func openSearchFromMenu() {
-        showSearch(anchoredToStatusItem: true)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
@@ -66,9 +61,9 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate, NSMenuDelega
         return controller
     }
 
-    private func showSearch(anchoredToStatusItem: Bool = false) {
+    private func showSearch() {
         DispatchQueue.main.async { [weak self] in
-            self?.lookupController()?.show(anchoredToStatusItem: anchoredToStatusItem)
+            self?.lookupController()?.show()
         }
     }
 
