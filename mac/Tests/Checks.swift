@@ -64,14 +64,63 @@ enum Checks {
         try check(englishChinese.direction(for: "草稿", dictionary: dictionary).0 == en,
                   "An English primary still supports Chinese-to-English dictionary lookup")
 
-        let provider = try ProviderSettings(baseURL: arguments[2] + "/v1/", model: "mock", apiKey: "test-only")
-        try check(provider.endpoint.path == "/v1/chat/completions", "Endpoint normalization")
+        let copied = """
+            {"baseURL":"http://127.0.0.1:8317/v1","apiKey":"lmx_test_example","model":"codex/sample-model"}
+            """
+        let mux = try LocalAiMuxConfiguration.parse(copied)
+        let muxProvider = try ProviderSettings(baseURL: mux.baseURL, model: mux.model, apiKey: mux.apiKey)
+        try check(muxProvider.endpoint.absoluteString == "http://127.0.0.1:8317/v1/chat/completions",
+                  "LocalAiMux JSON base URL")
+        try check(muxProvider.model == "codex/sample-model" && muxProvider.apiKey == "lmx_test_example",
+                  "LocalAiMux exact model ID and key")
+        let modelRequest = try LocalAiMuxConfiguration.modelsRequest(baseURL: mux.baseURL, apiKey: mux.apiKey)
+        try check(modelRequest.url?.absoluteString == "http://127.0.0.1:8317/v1/models"
+                  && modelRequest.httpMethod == "GET" && modelRequest.httpBody == nil
+                  && modelRequest.value(forHTTPHeaderField: "Authorization") == "Bearer lmx_test_example",
+                  "LocalAiMux directory request is read-only and authenticated")
+        let fullEndpoint = try LocalAiMuxConfiguration.modelsRequest(
+            baseURL: "http://127.0.0.1:8317/v1/chat/completions", apiKey: mux.apiKey
+        )
+        try check(fullEndpoint.url == modelRequest.url, "Directory URL from a full Chat Completions endpoint")
+        let modelList = Data("""
+            {"object":"list","data":[{"id":"qwen/model"},{"id":"codex/model"},{"id":"codex/model"},{"id":""}]}
+            """.utf8)
+        let modelIDs = try LocalAiMuxConfiguration.modelIDs(from: modelList)
+        try check(modelIDs == ["codex/model", "qwen/model"], "Keep exact model IDs, sorted and unique")
+        do {
+            _ = try LocalAiMuxConfiguration.modelIDs(from: Data(#"{"data":[]}"#.utf8))
+            throw CheckFailure(reason: "Accepted an empty model directory")
+        } catch TranslationError.emptyModelDirectory {}
+        let customPort = try LocalAiMuxConfiguration.parse(
+            copied.replacingOccurrences(of: "127.0.0.1:8317", with: "localhost:18317")
+        )
+        try check(customPort.baseURL == "http://localhost:18317/v1", "LocalAiMux custom loopback port")
+        do {
+            _ = try LocalAiMuxConfiguration.parse(copied.replacingOccurrences(
+                of: "lmx_test_example", with: "YOUR_LOCALAIMUX_KEY"
+            ))
+            throw CheckFailure(reason: "Imported a masked LocalAiMux preview")
+        } catch TranslationError.incompleteLocalAiMuxKey {}
+        for invalid in ["", copied.replacingOccurrences(of: "http://127.0.0.1:8317", with: "https://example.org")] {
+            do {
+                _ = try LocalAiMuxConfiguration.parse(invalid)
+                throw CheckFailure(reason: "Accepted invalid LocalAiMux config")
+            } catch TranslationError.invalidLocalAiMuxConfig {}
+        }
+
+        let offlineProvider = try ProviderSettings(baseURL: "http://127.0.0.1:1234/v1/", model: "mock", apiKey: "")
+        try check(offlineProvider.endpoint.path == "/v1/chat/completions", "Endpoint normalization")
         for invalid in ["http://example.org/v1", "https://user@example.org/v1", "https://example.org/v1#fragment"] {
             do {
                 _ = try ProviderSettings(baseURL: invalid, model: "mock", apiKey: "test-only")
                 throw CheckFailure(reason: "Accepted invalid provider address")
             } catch TranslationError.invalidAddress {}
         }
+        guard arguments.count > 2 else {
+            print("PASS · offline dictionary, language settings, LocalAiMux configuration and model directory")
+            return
+        }
+        let provider = try ProviderSettings(baseURL: arguments[2] + "/v1/", model: "mock", apiKey: "test-only")
         let text = "我这边都行，你定吧。"
         let original = try await TranslationClient.translate(
             TranslationInput(source: text, direction: en, tone: .original), using: provider

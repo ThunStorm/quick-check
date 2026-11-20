@@ -521,7 +521,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     @objc private func showSettings() {
         dismiss(restoreFocus: false)
         NSApp.activate()
-        ProviderPreferences.show()
+        ProviderPreferences().show()
     }
 
     @objc private func showLanguageSettings() {

@@ -35,33 +35,91 @@ struct ProviderSettings {
     static let endpointKey = "translation.endpoint"
     static let modelKey = "translation.model"
     static let maxLength = 8_000
+    static let loopbackHosts: Set<String> = ["localhost", "127.0.0.1", "::1", "[::1]"]
     let endpoint: URL
     let model: String
     let apiKey: String
 
     init(baseURL: String, model: String, apiKey: String) throws {
         let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.endpoint = try Self.chatEndpoint(baseURL: baseURL)
+        guard !model.isEmpty else { throw TranslationError.notConfigured }
+        self.model = model
+        self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func chatEndpoint(baseURL: String) throws -> URL {
         guard var components = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
               let host = components.host, !host.isEmpty,
               components.user == nil, components.password == nil,
               components.query == nil, components.fragment == nil,
               components.scheme == "https" ||
-                (components.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host))
+                (components.scheme == "http" && Self.loopbackHosts.contains(host.lowercased()))
         else { throw TranslationError.invalidAddress }
         while components.path.hasSuffix("/") { components.path.removeLast() }
         if !components.path.hasSuffix("/chat/completions") {
             components.path += "/chat/completions"
         }
         guard let endpoint = components.url else { throw TranslationError.invalidAddress }
-        guard !model.isEmpty else { throw TranslationError.notConfigured }
-        self.endpoint = endpoint
-        self.model = model
-        self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return endpoint
+    }
+}
+
+struct LocalAiMuxConfiguration: Decodable {
+    let baseURL: String
+    let apiKey: String
+    let model: String
+
+    static func parse(_ text: String?) throws -> Self {
+        guard let text, let copied = try? JSONDecoder().decode(Self.self, from: Data(text.utf8)) else {
+            throw TranslationError.invalidLocalAiMuxConfig
+        }
+        let address = copied.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = copied.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else { throw TranslationError.invalidLocalAiMuxConfig }
+        let connection = try connection(baseURL: address, apiKey: copied.apiKey)
+        return Self(baseURL: address, apiKey: connection.key, model: model)
+    }
+
+    static func modelsRequest(baseURL: String, apiKey: String) throws -> URLRequest {
+        let connection = try connection(baseURL: baseURL, apiKey: apiKey)
+        let directoryURL = connection.endpoint.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("models")
+        var request = URLRequest(url: directoryURL, timeoutInterval: 10)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(connection.key)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    static func modelIDs(from data: Data) throws -> [String] {
+        struct Directory: Decodable {
+            struct Model: Decodable { let id: String }
+            let data: [Model]
+        }
+        guard let directory = try? JSONDecoder().decode(Directory.self, from: data) else {
+            throw TranslationError.invalidModelDirectory
+        }
+        let ids = Set(directory.data.map(\.id).filter { !$0.isEmpty })
+        guard !ids.isEmpty else { throw TranslationError.emptyModelDirectory }
+        return ids.sorted()
+    }
+
+    private static func connection(baseURL: String, apiKey: String) throws -> (endpoint: URL, key: String) {
+        guard let endpoint = try? ProviderSettings.chatEndpoint(baseURL: baseURL),
+              let host = endpoint.host?.lowercased(), ProviderSettings.loopbackHosts.contains(host)
+        else { throw TranslationError.invalidLocalAiMuxConfig }
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard key.range(of: #"\Almx_[A-Za-z0-9_-]+\z"#, options: .regularExpression) != nil else {
+            throw TranslationError.incompleteLocalAiMuxKey
+        }
+        return (endpoint, key)
     }
 }
 
 enum TranslationError: LocalizedError {
     case invalidAddress, notConfigured, unauthorized, rateLimit, emptyResult, http(Int), keychain(OSStatus)
+    case invalidLocalAiMuxConfig, incompleteLocalAiMuxKey
+    case modelDirectoryUnauthorized, invalidModelDirectory, emptyModelDirectory
 
     var errorDescription: String? {
         switch self {
@@ -72,6 +130,11 @@ enum TranslationError: LocalizedError {
         case .emptyResult: "服务没有返回可用的译文。"
         case .http(let code): "翻译服务返回 HTTP \(code)。"
         case .keychain(let code): "无法访问钥匙串（\(code)）。"
+        case .invalidLocalAiMuxConfig: "请从 LocalAiMux 的 API 页复制完整的 JSON 配置，包含本机 Base URL 和模型 ID。"
+        case .incompleteLocalAiMuxKey: "请在 LocalAiMux 中选择「复制完整配置」，以取得完整的网关 API Key。"
+        case .modelDirectoryUnauthorized: "模型列表需要 LocalAiMux 网关 Key 的 models:read 权限。"
+        case .invalidModelDirectory: "LocalAiMux 没有返回有效的模型列表。"
+        case .emptyModelDirectory: "当前网关 Key 没有可用模型。"
         }
     }
 }
@@ -148,6 +211,17 @@ enum TranslationClient {
         configuration.urlCache = nil
         return URLSession(configuration: configuration, delegate: NoRedirect(), delegateQueue: nil)
     }()
+
+    static func loadLocalAiMuxModels(_ request: URLRequest) async throws -> [String] {
+        let (data, response) = try await session.data(for: request)
+        guard let response = response as? HTTPURLResponse else { throw TranslationError.invalidModelDirectory }
+        switch response.statusCode {
+        case 200..<300: return try LocalAiMuxConfiguration.modelIDs(from: data)
+        case 401, 403: throw TranslationError.modelDirectoryUnauthorized
+        case 429: throw TranslationError.rateLimit
+        default: throw TranslationError.http(response.statusCode)
+        }
+    }
 
     static func translate(_ input: TranslationInput, using settings: ProviderSettings) async throws -> String {
         let encoder = JSONEncoder()
