@@ -2,9 +2,14 @@ import AppKit
 
 @MainActor
 final class ProviderPreferences: NSObject, NSTextFieldDelegate {
+    private enum KeyStorage: Int {
+        case keychain, session, remove
+    }
+
     private let endpoint = NSTextField()
     private let model = NSComboBox()
     private let key = NSSecureTextField()
+    private let keyStorage = NSPopUpButton()
     private let modelList = NSButton(title: "获取模型", target: nil, action: nil)
     private var directoryTask: Task<Void, Never>?
     private var pendingLookup: UUID?
@@ -15,18 +20,16 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
         model.stringValue = defaults.string(forKey: ProviderSettings.modelKey) ?? ""
         endpoint.placeholderString = "https://你的服务/v1"
         model.placeholderString = "服务商提供的模型 ID"
-        key.placeholderString = "留空则使用无密钥配置"
+        key.placeholderString = "留空保留已保存的 Key"
         endpoint.setAccessibilityLabel("Base URL")
         model.setAccessibilityLabel("模型 ID")
         key.setAccessibilityLabel("API Key")
         endpoint.delegate = self
         key.delegate = self
-        do {
-            key.stringValue = try APIKeyStore.read()
-        } catch {
-            NSAlert(error: error).runModal()
-            return
-        }
+        keyStorage.addItems(withTitles: ["保存到钥匙串", "仅本次运行使用", "清除已保存的 Key"])
+        keyStorage.setAccessibilityLabel("API Key 保存方式")
+        keyStorage.target = self
+        keyStorage.action = #selector(changeKeyStorage)
 
         modelList.target = self
         modelList.action = #selector(fetchModels)
@@ -39,7 +42,8 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
         let form = NSGridView(views: [
             [NSTextField(labelWithString: "Base URL"), endpoint],
             [NSTextField(labelWithString: "模型 ID"), modelRow],
-            [NSTextField(labelWithString: "API Key"), key]
+            [NSTextField(labelWithString: "API Key"), key],
+            [NSTextField(labelWithString: "保存方式"), keyStorage]
         ])
         form.columnSpacing = 12
         form.rowSpacing = 8
@@ -49,7 +53,7 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
 
         let alert = NSAlert()
         alert.messageText = "翻译接口"
-        alert.informativeText = "填写兼容 Chat Completions 的接口，或导入 LocalAiMux 的完整 JSON。API Key 保存在钥匙串。"
+        alert.informativeText = "可导入 LocalAiMux 的完整 JSON。API Key 可保存到钥匙串，也可仅在本次运行使用。"
         alert.accessoryView = form
         form.frame.size = form.fittingSize
         alert.addButton(withTitle: "保存")
@@ -67,6 +71,8 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
                     let config = try LocalAiMuxConfiguration.parse(NSPasteboard.general.string(forType: .string))
                     endpoint.stringValue = config.baseURL
                     model.stringValue = config.model
+                    if storage == .remove { keyStorage.selectItem(at: KeyStorage.keychain.rawValue) }
+                    key.isEnabled = true
                     key.stringValue = config.apiKey
                     model.removeAllItems()
                 } catch {
@@ -78,11 +84,19 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
             do {
                 let address = endpoint.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 let modelName = model.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                let secret = key.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let secret = storage == .remove ? "" : typedKey
                 if !address.isEmpty || !modelName.isEmpty || !secret.isEmpty {
                     _ = try ProviderSettings(baseURL: address, model: modelName, apiKey: secret)
                 }
-                try APIKeyStore.save(secret)
+                switch storage {
+                case .keychain:
+                    if !secret.isEmpty { try APIKeyStore.save(secret) }
+                case .session:
+                    guard !secret.isEmpty else { throw TranslationError.sessionKeyRequired }
+                    APIKeyStore.useForSession(secret)
+                case .remove:
+                    try APIKeyStore.save("")
+                }
                 defaults.set(address.isEmpty ? nil : address, forKey: ProviderSettings.endpointKey)
                 defaults.set(modelName.isEmpty ? nil : modelName, forKey: ProviderSettings.modelKey)
                 return
@@ -92,14 +106,31 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
         }
     }
 
-    private func currentModelRequest() throws -> URLRequest {
-        try LocalAiMuxConfiguration.modelsRequest(baseURL: endpoint.stringValue, apiKey: key.stringValue)
+    private func currentModelRequest(allowInteraction: Bool) throws -> URLRequest {
+        try LocalAiMuxConfiguration.modelsRequest(baseURL: endpoint.stringValue,
+                                                   apiKey: modelDirectoryKey(allowInteraction: allowInteraction))
+    }
+
+    private func modelDirectoryKey(allowInteraction: Bool) throws -> String {
+        if storage == .remove { return "" }
+        if !typedKey.isEmpty { return typedKey }
+        if storage == .session { throw TranslationError.sessionKeyRequired }
+        return try APIKeyStore.read(allowInteraction: allowInteraction)
+    }
+
+    private var typedKey: String { key.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var storage: KeyStorage { KeyStorage(rawValue: keyStorage.indexOfSelectedItem) ?? .keychain }
+
+    @objc private func changeKeyStorage() {
+        key.isEnabled = storage != .remove
+        key.placeholderString = storage == .session ? "填写本次运行使用的 Key" : "留空保留已保存的 Key"
+        resetModelList()
     }
 
     @objc private func fetchModels() {
         let request: URLRequest
         do {
-            request = try currentModelRequest()
+            request = try currentModelRequest(allowInteraction: true)
         } catch {
             NSAlert(error: error).runModal()
             return
@@ -132,6 +163,10 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
     }
 
     func controlTextDidChange(_ notification: Notification) {
+        resetModelList()
+    }
+
+    private func resetModelList() {
         directoryTask?.cancel()
         directoryTask = nil
         setLoadingModels(false)
@@ -142,7 +177,7 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
         guard pendingLookup == lookupID else { return }
         directoryTask = nil
         setLoadingModels(false)
-        guard modelList.window?.isVisible == true, let current = try? currentModelRequest(),
+        guard modelList.window?.isVisible == true, let current = try? currentModelRequest(allowInteraction: false),
               current.url == request.url,
               current.value(forHTTPHeaderField: "Authorization") == request.value(forHTTPHeaderField: "Authorization")
         else { return }

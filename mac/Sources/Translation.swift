@@ -77,11 +77,11 @@ struct LocalAiMuxConfiguration: Decodable {
         let address = copied.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let model = copied.model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else { throw TranslationError.invalidLocalAiMuxConfig }
-        let connection = try connection(baseURL: address, apiKey: copied.apiKey)
+        let connection = try connection(baseURL: address, apiKey: { copied.apiKey })
         return Self(baseURL: address, apiKey: connection.key, model: model)
     }
 
-    static func modelsRequest(baseURL: String, apiKey: String) throws -> URLRequest {
+    static func modelsRequest(baseURL: String, apiKey: @autoclosure () throws -> String) throws -> URLRequest {
         let connection = try connection(baseURL: baseURL, apiKey: apiKey)
         let directoryURL = connection.endpoint.deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("models")
@@ -104,11 +104,11 @@ struct LocalAiMuxConfiguration: Decodable {
         return ids.sorted()
     }
 
-    private static func connection(baseURL: String, apiKey: String) throws -> (endpoint: URL, key: String) {
+    private static func connection(baseURL: String, apiKey: () throws -> String) throws -> (endpoint: URL, key: String) {
         guard let endpoint = try? ProviderSettings.chatEndpoint(baseURL: baseURL),
               let host = endpoint.host?.lowercased(), ProviderSettings.loopbackHosts.contains(host)
         else { throw TranslationError.invalidLocalAiMuxConfig }
-        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = try apiKey().trimmingCharacters(in: .whitespacesAndNewlines)
         guard key.range(of: #"\Almx_[A-Za-z0-9_-]+\z"#, options: .regularExpression) != nil else {
             throw TranslationError.incompleteLocalAiMuxKey
         }
@@ -118,6 +118,8 @@ struct LocalAiMuxConfiguration: Decodable {
 
 enum TranslationError: LocalizedError {
     case invalidAddress, notConfigured, unauthorized, rateLimit, emptyResult, http(Int), keychain(OSStatus)
+    case keychainAuthorizationRequired, keychainAuthorizationCancelled
+    case sessionKeyRequired
     case invalidLocalAiMuxConfig, incompleteLocalAiMuxKey
     case modelDirectoryUnauthorized, invalidModelDirectory, emptyModelDirectory
 
@@ -130,6 +132,9 @@ enum TranslationError: LocalizedError {
         case .emptyResult: "服务没有返回可用的译文。"
         case .http(let code): "翻译服务返回 HTTP \(code)。"
         case .keychain(let code): "无法访问钥匙串（\(code)）。"
+        case .keychainAuthorizationRequired: "按回车加载已保存的 API Key。"
+        case .keychainAuthorizationCancelled: "钥匙串授权已取消，可按回车重试。"
+        case .sessionKeyRequired: "请填写仅在本次运行中使用的 API Key。"
         case .invalidLocalAiMuxConfig: "请从 LocalAiMux 的 API 页复制完整的 JSON 配置，包含本机 Base URL 和模型 ID。"
         case .incompleteLocalAiMuxKey: "请在 LocalAiMux 中选择「复制完整配置」，以取得完整的网关 API Key。"
         case .modelDirectoryUnauthorized: "模型列表需要 LocalAiMux 网关 Key 的 models:read 权限。"
@@ -139,24 +144,54 @@ enum TranslationError: LocalizedError {
     }
 }
 
+@MainActor
 enum APIKeyStore {
     private static let query: [String: Any] = [
         kSecClass as String: kSecClassGenericPassword,
         kSecAttrService as String: "com.thunstorm.quickcheck.translation",
         kSecAttrAccount as String: NSUserName()
     ]
+    private static let storedKeyFlag = "translation.hasStoredKey"
+    private static var cachedKey: String?
 
-    static func read() throws -> String {
+    static func read(allowInteraction: Bool) throws -> String {
+        if let cachedKey { return cachedKey }
+        if !allowInteraction {
+            if UserDefaults.standard.object(forKey: storedKeyFlag) as? Bool == false { return "" }
+            throw TranslationError.keychainAuthorizationRequired
+        }
         var result: CFTypeRef?
         var lookup = query
         lookup[kSecReturnData as String] = true
         lookup[kSecMatchLimit as String] = kSecMatchLimitOne
         let status = SecItemCopyMatching(lookup as CFDictionary, &result)
-        if status == errSecItemNotFound { return "" }
-        guard status == errSecSuccess, let data = result as? Data,
-              let value = String(data: data, encoding: .utf8)
-        else { throw TranslationError.keychain(status) }
+        let value: String
+        switch status {
+        case errSecItemNotFound:
+            value = ""
+        case errSecSuccess:
+            guard let data = result as? Data, let decoded = String(data: data, encoding: .utf8) else {
+                throw TranslationError.keychain(errSecDecode)
+            }
+            value = decoded
+        case errSecInteractionNotAllowed, errSecAuthFailed:
+            throw TranslationError.keychainAuthorizationRequired
+        case errSecUserCanceled:
+            throw TranslationError.keychainAuthorizationCancelled
+        default:
+            throw TranslationError.keychain(status)
+        }
+        rememberStoredKey(value)
         return value
+    }
+
+    static func useForSession(_ key: String) {
+        cachedKey = key
+    }
+
+    private static func rememberStoredKey(_ key: String) {
+        cachedKey = key
+        UserDefaults.standard.set(!key.isEmpty, forKey: storedKeyFlag)
     }
 
     static func save(_ key: String) throws {
@@ -165,6 +200,7 @@ enum APIKeyStore {
             guard status == errSecSuccess || status == errSecItemNotFound else {
                 throw TranslationError.keychain(status)
             }
+            rememberStoredKey("")
             return
         }
         let value = [kSecValueData as String: Data(key.utf8)]
@@ -173,6 +209,7 @@ enum APIKeyStore {
             status = SecItemAdd(query.merging(value) { _, new in new } as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw TranslationError.keychain(status) }
+        rememberStoredKey(key)
     }
 }
 

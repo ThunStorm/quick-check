@@ -297,7 +297,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         guard !input.isComposing else { return }
         session.touch()
         refreshQuery()
-        if input.isPasting, !input.hasMarkedText() { submitQuery() }
+        if input.isPasting, !input.hasMarkedText() { submitQuery(allowKeychainPrompt: false) }
     }
 
     private func compositionChanged() {
@@ -317,7 +317,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
                 textView.insertText("\n", replacementRange: textView.selectedRange())
             } else if !source.isEmpty {
                 if session.touch() { refreshQuery() }
-                submitQuery()
+                submitQuery(allowKeychainPrompt: true)
             }
             return true
         }
@@ -352,12 +352,12 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         session.select(target)
         refreshQuery()
         panel.makeFirstResponder(input)
-        submitQuery()
+        submitQuery(allowKeychainPrompt: false)
     }
 
-    private func submitQuery() {
+    private func submitQuery(allowKeychainPrompt: Bool) {
         guard !input.isComposing, dictionaryResult.rows.isEmpty else { return }
-        generate(.original)
+        generate(.original, allowKeychainPrompt: allowKeychainPrompt)
     }
 
     private func refreshQuery() {
@@ -402,7 +402,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         info.toolTip = "已复制"
     }
 
-    private func generate(_ tone: Tone) {
+    private func generate(_ tone: Tone, allowKeychainPrompt: Bool = true) {
         guard let direction, !direction.isAlreadyInTarget, !source.isEmpty, pendingTone == nil else { return }
         let text = source
         guard text.count <= ProviderSettings.maxLength else {
@@ -419,7 +419,8 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         }
         let provider: ProviderSettings
         do {
-            provider = try ProviderSettings(baseURL: endpoint, model: model, apiKey: APIKeyStore.read())
+            provider = try ProviderSettings(baseURL: endpoint, model: model,
+                                            apiKey: APIKeyStore.read(allowInteraction: allowKeychainPrompt))
         } catch {
             errorMessage = error.localizedDescription
             render()
