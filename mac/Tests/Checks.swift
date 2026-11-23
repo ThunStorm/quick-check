@@ -141,22 +141,30 @@ enum Checks {
                   "LocalAiMux JSON base URL")
         try check(muxProvider.model == "codex/sample-model" && muxProvider.apiKey == "lmx_test_example",
                   "LocalAiMux exact model ID and key")
-        let modelRequest = try LocalAiMuxConfiguration.modelsRequest(baseURL: mux.baseURL, apiKey: mux.apiKey)
+        let modelRequest = try ProviderSettings.modelsRequest(baseURL: mux.baseURL, apiKey: mux.apiKey)
         try check(modelRequest.url?.absoluteString == "http://127.0.0.1:8317/v1/models"
                   && modelRequest.httpMethod == "GET" && modelRequest.httpBody == nil
                   && modelRequest.value(forHTTPHeaderField: "Authorization") == "Bearer lmx_test_example",
                   "LocalAiMux directory request is read-only and authenticated")
-        let fullEndpoint = try LocalAiMuxConfiguration.modelsRequest(
+        let fullEndpoint = try ProviderSettings.modelsRequest(
             baseURL: "http://127.0.0.1:8317/v1/chat/completions", apiKey: mux.apiKey
         )
         try check(fullEndpoint.url == modelRequest.url, "Directory URL from a full Chat Completions endpoint")
+        let genericDirectory = try ProviderSettings.modelsRequest(baseURL: "https://example.org/team/v1/", apiKey: "example-key")
+        try check(genericDirectory.url?.absoluteString == "https://example.org/team/v1/models"
+                  && genericDirectory.value(forHTTPHeaderField: "Authorization") == "Bearer example-key",
+                  "A compatible provider can list models with its own Base URL and Key")
+        let keylessDirectory = try ProviderSettings.modelsRequest(baseURL: "http://localhost:11434/v1", apiKey: "")
+        try check(keylessDirectory.url?.path == "/v1/models"
+                  && keylessDirectory.value(forHTTPHeaderField: "Authorization") == nil,
+                  "Keyless endpoints omit the authorization header")
         let modelList = Data("""
             {"object":"list","data":[{"id":"qwen/model"},{"id":"codex/model"},{"id":"codex/model"},{"id":""}]}
             """.utf8)
-        let modelIDs = try LocalAiMuxConfiguration.modelIDs(from: modelList)
+        let modelIDs = try ProviderSettings.modelIDs(from: modelList)
         try check(modelIDs == ["codex/model", "qwen/model"], "Keep exact model IDs, sorted and unique")
         do {
-            _ = try LocalAiMuxConfiguration.modelIDs(from: Data(#"{"data":[]}"#.utf8))
+            _ = try ProviderSettings.modelIDs(from: Data(#"{"data":[]}"#.utf8))
             throw CheckFailure(reason: "Accepted an empty model directory")
         } catch TranslationError.emptyModelDirectory {}
         let customPort = try LocalAiMuxConfiguration.parse(

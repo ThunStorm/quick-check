@@ -52,6 +52,10 @@ private final class QueryTextView: NSTextView {
 
 @MainActor
 final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
+    private enum TranslationEngine {
+        case local, ai
+    }
+
     private let logger = Logger(subsystem: "com.thunstorm.quickcheck", category: "MenuBar")
     private let width: CGFloat = 390
     private let padding: CGFloat = 16
@@ -79,8 +83,11 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private let directionLabel = NSTextField(labelWithString: "")
     private let copyButton = NSButton(title: "复制", target: nil, action: nil)
     private let retryButton = NSButton(title: "重试", target: nil, action: nil)
+    private let aiButton = NSButton(title: "AI 翻译", target: nil, action: nil)
     private let toneMenu = NSPopUpButton()
     private let footer = NSStackView()
+    private let sourceCount = NSTextField(labelWithString: "")
+    private let resultCount = NSTextField(labelWithString: "")
 
     private let dictionary: LocalDictionary
     private weak var statusButton: NSStatusBarButton?
@@ -92,11 +99,14 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private var dictionarySettings = DictionarySettings.load()
     private var lastQueriedText = ""
     private var output: String?
+    private var outputEngine: TranslationEngine?
     private var displayedTone = Tone.original
-    private var pendingTone: Tone?
+    private var pendingEngine: TranslationEngine?
     private var failedTone: Tone?
     private var errorMessage: String?
     private var request: Task<Void, Never>?
+    private var localTranslationHost: NSView?
+    private var presentingSystemUI = false
     private var generation = 0
     private var anchorToStatusItem = false
 
@@ -130,6 +140,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     private func dismiss(restoreFocus: Bool) {
         guard panel.isVisible else { return }
+        if pendingEngine == .local { cancelTranslation() }
         for monitor in monitors { NSEvent.removeMonitor(monitor) }
         monitors.removeAll()
         panel.orderOut(nil)
@@ -139,6 +150,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        guard !presentingSystemUI else { return }
         if anchorToStatusItem && panel.isVisible {
             logger.notice("Search panel resigned key")
         }
@@ -148,7 +160,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private func installMonitors() {
         let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) {
             [weak self] event in
-            if let self, event.window !== self.statusButton?.window {
+            if let self, !self.presentingSystemUI, event.window !== self.statusButton?.window {
                 let insidePanel = event.window === self.panel
                     && self.materialContainer.frame.contains(event.locationInWindow)
                 if !insidePanel { self.dismiss(restoreFocus: false) }
@@ -217,12 +229,15 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         copyButton.action = #selector(copyResult)
         retryButton.target = self
         retryButton.action = #selector(retry)
+        aiButton.target = self
+        aiButton.action = #selector(translateWithAI)
+        aiButton.toolTip = "用已配置的 AI 接口重新翻译原文"
         toneMenu.target = self
         toneMenu.action = #selector(changeTone)
         toneMenu.setAccessibilityLabel("语气")
         toneMenu.addItems(withTitles: Tone.allCases.map(\.rawValue))
         toneMenu.controlSize = .small
-        for button in [retryButton, copyButton] {
+        for button in [retryButton, copyButton, aiButton] {
             button.bezelStyle = .accessoryBarAction
             button.controlSize = .small
         }
@@ -230,8 +245,16 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         footer.orientation = .horizontal
         footer.alignment = .centerY
         footer.spacing = 6
-        [directionLabel, info, retryButton, toneMenu, copyButton].forEach(footer.addArrangedSubview)
-        [language, settings, inputScroll, placeholder, divider, resultScroll, footer].forEach(surface.addSubview)
+        aiButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        [directionLabel, info, retryButton, toneMenu, copyButton, aiButton].forEach(footer.addArrangedSubview)
+        for label in [sourceCount, resultCount] {
+            label.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+            label.textColor = .secondaryLabelColor
+            label.alignment = .right
+            label.lineBreakMode = .byTruncatingMiddle
+            label.toolTip = "字符数，不含空白"
+        }
+        [language, settings, inputScroll, placeholder, divider, resultScroll, footer, sourceCount, resultCount].forEach(surface.addSubview)
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(updateSurface), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: nil
@@ -298,7 +321,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         guard !input.isComposing else { return }
         session.touch()
         refreshQuery()
-        if input.isPasting, !input.hasMarkedText() { submitQuery(allowKeychainPrompt: false) }
+        if input.isPasting, !input.hasMarkedText() { submitLocalQuery(allowDownload: false) }
     }
 
     private func compositionChanged() {
@@ -318,7 +341,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
                 textView.insertText("\n", replacementRange: textView.selectedRange())
             } else if !source.isEmpty {
                 if session.touch() { refreshQuery() }
-                submitQuery(allowKeychainPrompt: true)
+                submitLocalQuery(allowDownload: true)
             }
             return true
         }
@@ -353,22 +376,97 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         session.select(target)
         refreshQuery()
         panel.makeFirstResponder(input)
-        submitQuery(allowKeychainPrompt: false)
+        submitLocalQuery(allowDownload: false)
     }
 
-    private func submitQuery(allowKeychainPrompt: Bool) {
-        guard !input.isComposing, dictionaryResult.rows.isEmpty else { return }
-        generate(.original, allowKeychainPrompt: allowKeychainPrompt)
+    private func submitLocalQuery(allowDownload: Bool) {
+        guard let direction, !direction.isAlreadyInTarget, !source.isEmpty, !input.isComposing,
+              dictionaryResult.rows.isEmpty, pendingEngine == nil else { return }
+        guard source.count <= ProviderSettings.maxLength else {
+            errorMessage = "最多可翻译 \(ProviderSettings.maxLength) 字符。"
+            render()
+            return
+        }
+        let translation = LocalTranslation(text: source, direction: direction)
+        let current = generation
+        pendingEngine = .local
+        failedTone = nil
+        errorMessage = nil
+        render()
+        request = Task { [weak self] in
+            do {
+                let status = try await translation.status()
+                try Task.checkCancellation()
+                guard let self, current == self.generation else { return }
+                switch status {
+                case .unsupported:
+                    throw LocalTranslationError.unsupported
+                case .supported:
+                    guard allowDownload else { throw LocalTranslationError.downloadRequired }
+                    self.hostLocalTranslation(translation, generation: current, mayPresentUI: true)
+                case .installed:
+                    if #available(macOS 26.0, *), let source = translation.source {
+                        let result = try await translation.translateInstalled(from: source)
+                        self.finishLocalTranslation(.success(result), generation: current)
+                    } else {
+                        self.hostLocalTranslation(translation, generation: current, mayPresentUI: translation.source == nil)
+                    }
+                @unknown default:
+                    throw LocalTranslationError.unavailable
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.finishLocalTranslation(.failure(error), generation: current)
+            }
+        }
     }
 
-    private func refreshQuery() {
+    private func hostLocalTranslation(_ translation: LocalTranslation, generation: Int, mayPresentUI: Bool) {
+        presentingSystemUI = mayPresentUI
+        if mayPresentUI { NSApp.activate() }
+        let host = translation.host { [weak self] result in
+            self?.finishLocalTranslation(result, generation: generation)
+        }
+        host.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
+        localTranslationHost = host
+        surface.addSubview(host)
+    }
+
+    private func finishLocalTranslation(_ result: Result<String, Error>, generation: Int) {
+        guard generation == self.generation, pendingEngine == .local else { return }
+        request = nil
+        pendingEngine = nil
+        presentingSystemUI = false
+        localTranslationHost?.removeFromSuperview()
+        localTranslationHost = nil
+        switch result {
+        case .success(let text):
+            output = text
+            outputEngine = .local
+            displayedTone = .original
+        case .failure(let error):
+            errorMessage = (error as? LocalTranslationError)?.localizedDescription
+                ?? LocalTranslationError.unavailable.localizedDescription
+        }
+        render()
+    }
+
+    private func cancelTranslation() {
         generation += 1
         request?.cancel()
         request = nil
-        pendingTone = nil
+        pendingEngine = nil
+        presentingSystemUI = false
+        localTranslationHost?.removeFromSuperview()
+        localTranslationHost = nil
+    }
+
+    private func refreshQuery() {
+        cancelTranslation()
         failedTone = nil
         errorMessage = nil
         output = nil
+        outputEngine = nil
         displayedTone = .original
         let text = source
         lastQueriedText = text
@@ -394,6 +492,8 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     @objc private func retry() { generate(failedTone ?? .original) }
 
+    @objc private func translateWithAI() { generate(.original) }
+
     @objc private func copyResult() {
         let text = output ?? dictionaryResult.plainText
         guard !text.isEmpty else { return }
@@ -403,8 +503,8 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         info.toolTip = "已复制"
     }
 
-    private func generate(_ tone: Tone, allowKeychainPrompt: Bool = true) {
-        guard let direction, !direction.isAlreadyInTarget, !source.isEmpty, pendingTone == nil else { return }
+    private func generate(_ tone: Tone) {
+        guard let direction, !direction.isAlreadyInTarget, !source.isEmpty, pendingEngine == nil else { return }
         let text = source
         guard text.count <= ProviderSettings.maxLength else {
             errorMessage = "最多可翻译 \(ProviderSettings.maxLength) 字符。"
@@ -420,8 +520,11 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         }
         let provider: ProviderSettings
         do {
+            let url = try ProviderSettings.chatEndpoint(baseURL: endpoint)
+            presentingSystemUI = true
+            defer { presentingSystemUI = false }
             provider = try ProviderSettings(baseURL: endpoint, model: model,
-                                            apiKey: APIKeyStore.read(allowInteraction: allowKeychainPrompt))
+                                            apiKey: APIKeyStore.read(for: url, allowInteraction: true))
         } catch {
             errorMessage = error.localizedDescription
             render()
@@ -430,7 +533,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
         let input = TranslationInput(source: text, direction: direction, tone: tone)
         let current = generation
-        pendingTone = tone
+        pendingEngine = .ai
         failedTone = nil
         errorMessage = nil
         render()
@@ -439,6 +542,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
                 let translated = try await TranslationClient.translate(input, using: provider)
                 guard let self, !Task.isCancelled, current == self.generation else { return }
                 self.output = translated
+                self.outputEngine = .ai
                 self.displayedTone = tone
             } catch {
                 guard let self, !Task.isCancelled, current == self.generation else { return }
@@ -451,7 +555,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
             }
             guard let self, current == self.generation else { return }
             self.request = nil
-            self.pendingTone = nil
+            self.pendingEngine = nil
             self.render()
         }
     }
@@ -468,13 +572,27 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         updatePlaceholder()
         directionLabel.stringValue = direction?.label ?? ""
         directionLabel.isHidden = direction == nil
-        retryButton.isHidden = failedTone == nil || pendingTone != nil
+        retryButton.isHidden = failedTone == nil || pendingEngine != nil
+        aiButton.isHidden = direction == nil || alreadyInTarget
+        aiButton.isEnabled = pendingEngine == nil
         copyButton.isHidden = output == nil && !dictionaryResult.hasContent
-        toneMenu.isHidden = output == nil || alreadyInTarget
-        toneMenu.isEnabled = pendingTone == nil
-        toneMenu.selectItem(at: Tone.allCases.firstIndex(of: pendingTone ?? displayedTone) ?? 0)
-        info.stringValue = errorMessage ?? (pendingTone != nil ? "翻译中…" :
-            (alreadyInTarget ? "已是目标语" : (output != nil ? "" : (dictionaryResult.rows.isEmpty ? "↵ 翻译" : "本地词典"))))
+        toneMenu.isHidden = outputEngine != .ai || alreadyInTarget
+        toneMenu.isEnabled = pendingEngine == nil
+        toneMenu.selectItem(at: Tone.allCases.firstIndex(of: displayedTone) ?? 0)
+        if let errorMessage {
+            info.stringValue = errorMessage
+        } else if let pendingEngine {
+            info.stringValue = pendingEngine == .local ? "本地翻译中…" : "AI 翻译中…"
+        } else if alreadyInTarget {
+            info.stringValue = "已是目标语"
+        } else if let outputEngine {
+            info.stringValue = outputEngine == .local ? "本地翻译" : "AI 译文"
+        } else {
+            info.stringValue = dictionaryResult.rows.isEmpty ? "↵ 本地翻译" : "本地词典"
+        }
+        let translated = output ?? (dictionaryResult.rows.isEmpty ? nil : dictionaryResult.rows.map(\.meaning).joined(separator: "\n"))
+        sourceCount.stringValue = "原文 \(characterCount(source))"
+        resultCount.stringValue = "译文 \(translated.map(characterCount) ?? "—")"
         info.toolTip = info.stringValue
         info.textColor = errorMessage == nil ? .secondaryLabelColor : .systemRed
 
@@ -572,7 +690,17 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         resultScroll.frame = NSRect(x: padding, y: 41, width: contentWidth, height: resultHeight)
         resultScroll.hasVerticalScroller = resultHeight >= 236
         footer.isHidden = !expanded
-        footer.frame = NSRect(x: padding, y: 12, width: contentWidth, height: 24)
+        let countWidth: CGFloat = 76
+        footer.frame = NSRect(x: padding, y: 12, width: contentWidth - countWidth - 8, height: 24)
+        let countX = width - padding - countWidth
+        sourceCount.frame = NSRect(x: countX, y: 23, width: countWidth, height: 13)
+        resultCount.frame = NSRect(x: countX, y: 10, width: countWidth, height: 13)
+        sourceCount.isHidden = !expanded
+        resultCount.isHidden = !expanded
+    }
+
+    private func characterCount(_ text: String) -> String {
+        text.count(where: { !$0.isWhitespace }).formatted()
     }
 
     private func layoutOutline(width: CGFloat, height: CGFloat) {

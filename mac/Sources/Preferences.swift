@@ -33,7 +33,7 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
 
         modelList.target = self
         modelList.action = #selector(fetchModels)
-        modelList.toolTip = "获取本机 LocalAiMux 当前 Key 可用的模型"
+        modelList.toolTip = "从当前 Base URL 获取可用模型"
         model.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let modelRow = NSStackView(views: [model, modelList])
         modelRow.orientation = .horizontal
@@ -85,18 +85,19 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
                 let address = endpoint.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 let modelName = model.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 let secret = storage == .remove ? "" : typedKey
-                if !address.isEmpty || !modelName.isEmpty || !secret.isEmpty {
-                    _ = try ProviderSettings(baseURL: address, model: modelName, apiKey: secret)
-                }
+                let provider = !address.isEmpty || !modelName.isEmpty || !secret.isEmpty
+                    ? try ProviderSettings(baseURL: address, model: modelName, apiKey: secret)
+                    : nil
                 switch storage {
                 case .keychain:
-                    if !secret.isEmpty { try APIKeyStore.save(secret) }
+                    if !secret.isEmpty { try APIKeyStore.save(secret, endpoint: provider?.endpoint) }
                 case .session:
-                    guard !secret.isEmpty else { throw TranslationError.sessionKeyRequired }
-                    APIKeyStore.useForSession(secret)
+                    guard let provider, !secret.isEmpty else { throw TranslationError.sessionKeyRequired }
+                    APIKeyStore.useForSession(secret, endpoint: provider.endpoint)
                 case .remove:
-                    try APIKeyStore.save("")
+                    try APIKeyStore.save("", endpoint: nil)
                 }
+                APIKeyStore.preserveKeyEndpoint()
                 defaults.set(address.isEmpty ? nil : address, forKey: ProviderSettings.endpointKey)
                 defaults.set(modelName.isEmpty ? nil : modelName, forKey: ProviderSettings.modelKey)
                 return
@@ -107,7 +108,7 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
     }
 
     private func currentModelRequest(allowInteraction: Bool) throws -> URLRequest {
-        try LocalAiMuxConfiguration.modelsRequest(baseURL: endpoint.stringValue,
+        try ProviderSettings.modelsRequest(baseURL: endpoint.stringValue,
                                                    apiKey: modelDirectoryKey(allowInteraction: allowInteraction))
     }
 
@@ -115,7 +116,8 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
         if storage == .remove { return "" }
         if !typedKey.isEmpty { return typedKey }
         if storage == .session { throw TranslationError.sessionKeyRequired }
-        return try APIKeyStore.read(allowInteraction: allowInteraction)
+        let url = try ProviderSettings.chatEndpoint(baseURL: endpoint.stringValue)
+        return try APIKeyStore.read(for: url, allowInteraction: allowInteraction)
     }
 
     private var typedKey: String { key.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -142,7 +144,7 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
         directoryTask = Task.detached { [weak self] in
             let result: Result<[String], Error>
             do {
-                result = .success(try await TranslationClient.loadLocalAiMuxModels(request))
+                result = .success(try await TranslationClient.loadModels(request))
             } catch {
                 result = .failure(error)
             }
