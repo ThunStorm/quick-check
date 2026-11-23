@@ -254,3 +254,49 @@ final class LanguagePreferences: NSObject {
         secondary.selectItem(withTitle: settings.defaultSecond.name)
     }
 }
+
+@MainActor
+enum DictionaryPreferences {
+    static func show(_ settings: DictionarySettings) -> DictionarySettings? {
+        let cedict = checkbox("CC-CEDICT 中英词库", checked: settings.useCEDICT)
+        let tomoshi = checkbox("Tomoshi 中日词库", checked: settings.useTomoshi)
+        let wordNet = checkbox("Open English WordNet 英语词库", checked: settings.useWordNet)
+        let definitions = checkbox("显示详细释义", checked: settings.showDefinitions)
+        let examples = checkbox("显示例句", checked: settings.showExamples)
+
+        let form = NSGridView(views: [
+            [NSTextField(labelWithString: "词库"), cedict],
+            [NSView(), tomoshi],
+            [NSView(), wordNet],
+            [NSTextField(labelWithString: "结果显示"), definitions],
+            [NSView(), examples]
+        ])
+        form.columnSpacing = 12
+        form.rowSpacing = 8
+        form.column(at: 0).xPlacement = .trailing
+        form.column(at: 1).xPlacement = .leading
+        form.frame.size = form.fittingSize
+
+        let alert = NSAlert()
+        alert.messageText = "词库与显示"
+        alert.informativeText = "英语详细释义和例句来自 WordNet。"
+        alert.accessoryView = form
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        return DictionarySettings(
+            useCEDICT: cedict.state == .on,
+            useTomoshi: tomoshi.state == .on,
+            useWordNet: wordNet.state == .on,
+            showDefinitions: definitions.state == .on,
+            showExamples: examples.state == .on
+        )
+    }
+
+    private static func checkbox(_ title: String, checked: Bool) -> NSButton {
+        let button = NSButton(checkboxWithTitle: title, target: nil, action: nil)
+        button.state = checked ? .on : .off
+        return button
+    }
+}

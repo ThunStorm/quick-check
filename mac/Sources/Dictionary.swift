@@ -8,6 +8,45 @@ struct DictionaryEntry: Equatable {
     let meaning: String
 }
 
+struct DictionarySettings: Equatable, Codable {
+    private static let key = "dictionary.settings"
+
+    var useCEDICT = true
+    var useTomoshi = true
+    var useWordNet = true
+    var showDefinitions = true
+    var showExamples = true
+
+    static func load(from defaults: UserDefaults = .standard) -> Self {
+        guard let data = defaults.data(forKey: key),
+              let settings = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
+        return settings
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        defaults.set(try? JSONEncoder().encode(self), forKey: Self.key)
+    }
+
+    func includes(_ direction: Direction) -> Bool {
+        switch (direction.source, direction.target) {
+        case (.chinese?, .english), (.english?, .chinese): useCEDICT
+        case (.chinese?, .japanese), (.japanese?, .chinese): useTomoshi
+        default: false
+        }
+    }
+}
+
+struct DictionarySense: Equatable {
+    let word: String
+    let partOfSpeech: String
+    let definition: String?
+    let examples: [String]
+
+    var plainText: String {
+        ([word + "  " + partOfSpeech] + [definition].compactMap { $0 } + examples).joined(separator: "\n")
+    }
+}
+
 struct DictionaryResult: Equatable {
     struct Row: Equatable {
         let meaning: String
@@ -23,10 +62,14 @@ struct DictionaryResult: Equatable {
     ]
     private static let separators = CharacterSet(charactersIn: "；;、")
     let formNote: String?
+    let lemma: String?
     let rows: [Row]
+    var senses: [DictionarySense] = []
+    var hasContent: Bool { !rows.isEmpty || !senses.isEmpty }
 
-    init(entries: [DictionaryEntry], target: Language? = nil, formNote: String? = nil) {
+    init(entries: [DictionaryEntry], target: Language? = nil, formNote: String? = nil, lemma: String? = nil) {
         self.formNote = formNote
+        self.lemma = lemma
         var rows: [Row] = []
         var positions: [String: Int] = [:]
         for entry in entries {
@@ -66,7 +109,10 @@ struct DictionaryResult: Equatable {
     }
 
     var plainText: String {
-        ([formNote].compactMap { $0 } + rows.map(\.plainText)).joined(separator: "\n")
+        let translations = ([formNote].compactMap { $0 } + rows.map(\.plainText)).joined(separator: "\n")
+        let details = senses.isEmpty ? "" : "Open English WordNet\n"
+            + senses.map(\.plainText).joined(separator: "\n\n")
+        return [translations, details].filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
     private static func partsOfSpeech(in text: String) -> [String] {
@@ -116,10 +162,19 @@ final class LocalDictionary {
         "will be", "would be", "can be", "could be", "should be", "must be"
     ]
     private let url: URL
+    private let wordNetURL: URL?
     private var database: OpaquePointer?
+    private var wordNetDatabase: OpaquePointer?
 
-    init(url: URL) { self.url = url }
-    deinit { if let database { sqlite3_close(database) } }
+    init(url: URL, wordNetURL: URL? = nil) {
+        self.url = url
+        self.wordNetURL = wordNetURL
+    }
+
+    deinit {
+        if let database { sqlite3_close(database) }
+        if let wordNetDatabase { sqlite3_close(wordNetDatabase) }
+    }
 
     static func normalize(_ text: String) -> String {
         text.precomposedStringWithCompatibilityMapping
@@ -128,12 +183,29 @@ final class LocalDictionary {
             .joined(separator: " ")
     }
 
-    func search(_ text: String, direction: Direction) -> DictionaryResult {
-        let exact = lookup(text, direction: direction)
-        if exact.isEmpty, direction == Self.englishToChinese, let inflection = englishInflection(text) {
-            return inflection
+    func search(_ text: String, direction: Direction, settings: DictionarySettings = .init()) -> DictionaryResult {
+        let includesTranslations = settings.includes(direction)
+        let includesDetails = settings.useWordNet && (settings.showDefinitions || settings.showExamples)
+        let exact = includesTranslations ? lookup(text, direction: direction) : []
+        let inflection = exact.isEmpty && direction == Self.englishToChinese
+            && (includesTranslations || includesDetails) ? englishInflection(text) : nil
+        var result = (includesTranslations ? inflection : nil) ?? DictionaryResult(entries: exact, target: direction.target)
+        if includesDetails {
+            let words: [String]
+            if direction.source == .english {
+                words = [inflection?.lemma ?? lookupKey(text)]
+            } else if direction.target == .english {
+                words = Array(result.rows.prefix(3).map(\.meaning))
+            } else {
+                words = []
+            }
+            for word in words where result.senses.count < 4 {
+                let remaining = 4 - result.senses.count
+                let limit = words.count == 1 ? remaining : min(2, remaining)
+                result.senses += readWordNet(word, settings: settings, limit: limit)
+            }
         }
-        return DictionaryResult(entries: exact, target: direction.target)
+        return result
     }
 
     func englishInflection(_ text: String) -> DictionaryResult? {
@@ -156,7 +228,7 @@ final class LocalDictionary {
                 let suggestion = auxiliary.isEmpty
                     ? "拼写更正 · 过去式 \(forms.past) · 过去分词 \(forms.participle)"
                     : "拼写更正 · \(auxiliary) \(forms.participle)"
-                return DictionaryResult(entries: entries, target: .chinese, formNote: "\(suggestion)\n原形 \(lemma)")
+                return DictionaryResult(entries: entries, target: .chinese, formNote: "\(suggestion)\n原形 \(lemma)", lemma: lemma)
             }
         }
 
@@ -172,7 +244,7 @@ final class LocalDictionary {
         guard !entries.isEmpty else { return nil }
         if wrongPassive, let knownForms {
             return DictionaryResult(entries: entries, target: .chinese,
-                                    formNote: "拼写更正 · \(auxiliary) \(knownForms.participle)\n原形 \(lemma)")
+                                    formNote: "拼写更正 · \(auxiliary) \(knownForms.participle)\n原形 \(lemma)", lemma: lemma)
         }
         let presentation = auxiliary.isEmpty ? "原形 \(lemma)" : "被动形式 \(auxiliary) \(form) · 原形 \(lemma)"
         let forms: String
@@ -181,14 +253,15 @@ final class LocalDictionary {
         } else {
             forms = participle ? "\n过去式 / 过去分词 \(form)" : ""
         }
-        return DictionaryResult(entries: entries, target: .chinese, formNote: presentation + forms)
+        return DictionaryResult(entries: entries, target: .chinese, formNote: presentation + forms, lemma: lemma)
     }
 
     func lookup(_ text: String, direction: Direction) -> [DictionaryEntry] {
         guard direction.hasLocalDictionary else { return [] }
-        let sentencePunctuation = CharacterSet(charactersIn: "。！？!?").union(.whitespaces)
-        let key = Self.normalize(text).trimmingCharacters(in: sentencePunctuation)
-        guard !key.isEmpty, key.count <= 80, let database = open() else { return [] }
+        let key = lookupKey(text)
+        guard !key.isEmpty, key.count <= 80 else { return [] }
+        if database == nil { database = Self.open(url) }
+        guard let database else { return [] }
         let sql = """
             SELECT headword, detail, meaning, priority FROM entries
             WHERE direction = ? AND query = ?
@@ -217,15 +290,48 @@ final class LocalDictionary {
         return results
     }
 
-    private func open() -> OpaquePointer? {
-        if let database { return database }
+    private func lookupKey(_ text: String) -> String {
+        let sentencePunctuation = CharacterSet(charactersIn: "。！？!?").union(.whitespaces)
+        return Self.normalize(text).trimmingCharacters(in: sentencePunctuation)
+    }
+
+    private func readWordNet(_ word: String, settings: DictionarySettings, limit: Int) -> [DictionarySense] {
+        let key = Self.normalize(word).trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        guard !key.isEmpty, key.count <= 80, let wordNetURL else { return [] }
+        if wordNetDatabase == nil { wordNetDatabase = Self.open(wordNetURL) }
+        guard let wordNetDatabase else { return [] }
+        let sql = """
+            SELECT senses.part, senses.definition, senses.examples
+            FROM words JOIN senses ON words.sense = senses.id
+            WHERE words.word = ? AND (? OR senses.examples != '')
+            ORDER BY words.position LIMIT ?
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(wordNetDatabase, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(statement, 1, key, -1, transient)
+        sqlite3_bind_int(statement, 2, settings.showDefinitions ? 1 : 0)
+        sqlite3_bind_int(statement, 3, Int32(limit))
+        var results: [DictionarySense] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let part = String(cString: sqlite3_column_text(statement, 0))
+            let definition = settings.showDefinitions ? String(cString: sqlite3_column_text(statement, 1)) : nil
+            let examples = settings.showExamples ? String(cString: sqlite3_column_text(statement, 2))
+                .split(separator: "\n").map(String.init) : []
+            results.append(DictionarySense(word: key, partOfSpeech: part, definition: definition, examples: examples))
+        }
+        return results
+    }
+
+    private static func open(_ url: URL) -> OpaquePointer? {
         var opened: OpaquePointer?
         guard sqlite3_open_v2(url.path, &opened, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             if let opened { sqlite3_close(opened) }
             return nil
         }
-        database = opened
         if let opened { sqlite3_exec(opened, "PRAGMA cache_size=-512", nil, nil, nil) }
-        return database
+        return opened
     }
 }

@@ -56,7 +56,9 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
 
     private func lookupController() -> PanelController? {
         if controller == nil, let url = Bundle.main.url(forResource: "dictionary", withExtension: "sqlite3") {
-            controller = PanelController(statusButton: status?.button, dictionary: LocalDictionary(url: url))
+            let wordNet = Bundle.main.url(forResource: "wordnet", withExtension: "sqlite3")
+            controller = PanelController(statusButton: status?.button,
+                                         dictionary: LocalDictionary(url: url, wordNetURL: wordNet))
         }
         return controller
     }

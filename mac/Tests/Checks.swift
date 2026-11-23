@@ -13,7 +13,9 @@ private func check(_ condition: @autoclosure () -> Bool, _ description: String) 
 enum Checks {
     static func main() async throws {
         let arguments = CommandLine.arguments
-        let dictionary = LocalDictionary(url: URL(fileURLWithPath: arguments[1]))
+        let dictionaryURL = URL(fileURLWithPath: arguments[1])
+        let wordNetURL = dictionaryURL.deletingLastPathComponent().appendingPathComponent("wordnet.sqlite3")
+        let dictionary = LocalDictionary(url: dictionaryURL, wordNetURL: wordNetURL)
         var session = LookupSession()
         let now = Date(timeIntervalSince1970: 100)
         let zhEn = Direction(source: .chinese, target: .english)
@@ -66,6 +68,25 @@ enum Checks {
                   "System lemmatizer handles regular past tense")
         try check(dictionary.search("The article was written yesterday.", direction: en).rows.isEmpty,
                   "Do not collapse a whole sentence into a dictionary word")
+        let enriched = dictionary.search("swam", direction: en)
+        try check(enriched.senses.contains { $0.word == "swim" && $0.definition != nil },
+                  "WordNet uses the inflected word's lemma and retains sense definitions")
+        try check(enriched.senses.contains { !$0.examples.isEmpty }, "WordNet displays usage examples")
+        var wordNetOnly = DictionarySettings(useCEDICT: false, useTomoshi: false, showDefinitions: false)
+        let examplesOnly = dictionary.search("swim", direction: en, settings: wordNetOnly)
+        try check(examplesOnly.rows.isEmpty && !examplesOnly.senses.isEmpty
+                  && examplesOnly.senses.allSatisfy { $0.definition == nil && !$0.examples.isEmpty },
+                  "Examples can display independently with the bilingual source disabled")
+        wordNetOnly.showDefinitions = true
+        wordNetOnly.showExamples = false
+        let definitionsOnly = dictionary.search("swim", direction: en, settings: wordNetOnly)
+        try check(definitionsOnly.senses.allSatisfy { $0.definition != nil && $0.examples.isEmpty }
+                  && !definitionsOnly.senses.isEmpty, "Definitions can display independently")
+        try check(dictionary.search("領収書", direction: ja, settings: wordNetOnly).rows.isEmpty,
+                  "Tomoshi can be disabled independently")
+        wordNetOnly.useWordNet = false
+        try check(!dictionary.search("swim", direction: en, settings: wordNetOnly).hasContent,
+                  "Disabled sources do not populate the result")
 
         session.select(.japanese, at: now)
         try check(session.direction(for: "收据", dictionary: dictionary) == zhJa, "Chinese → selected Japanese")
@@ -81,6 +102,8 @@ enum Checks {
         let suite = "com.thunstorm.quickcheck.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
+        wordNetOnly.save(to: defaults)
+        try check(DictionarySettings.load(from: defaults) == wordNetOnly, "Dictionary preferences persist")
         try check(LanguageSettings.load(from: defaults) == .init(), "Factory language defaults")
         let settings = LanguageSettings(primary: .french, defaultSecond: .korean)
         settings.save(to: defaults)

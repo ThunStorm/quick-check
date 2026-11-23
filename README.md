@@ -16,7 +16,7 @@
 
 ## 平台与构建
 
-macOS 版本在 [`mac/`](mac/README.md)，包含构建、使用和测试说明。Windows 版本后续采用独立平台目录。仓库代码采用 Apache 2.0 许可，内置词库使用单独的 [CC BY-SA 4.0 许可](mac/Resources/DICTIONARY_LICENSE.md)。
+macOS 版本在 [`mac/`](mac/README.md)，包含构建、使用和测试说明。Windows 版本后续采用独立平台目录。仓库代码采用 Apache 2.0 许可，内置词库的许可见[词库授权说明](mac/Resources/DICTIONARY_LICENSE.md)。
 
 ## 后续计划
 

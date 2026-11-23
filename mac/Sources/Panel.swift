@@ -89,6 +89,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private var session = LookupSession(settings: LanguageSettings.load())
     private var direction: Direction?
     private var dictionaryResult = DictionaryResult(entries: [])
+    private var dictionarySettings = DictionarySettings.load()
     private var lastQueriedText = ""
     private var output: String?
     private var displayedTone = Tone.original
@@ -377,7 +378,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         } else {
             let currentDirection = session.direction(for: text, dictionary: dictionary)
             direction = currentDirection
-            dictionaryResult = dictionary.search(text, direction: currentDirection)
+            dictionaryResult = dictionary.search(text, direction: currentDirection, settings: dictionarySettings)
             if currentDirection.isAlreadyInTarget { output = text }
         }
         render()
@@ -468,7 +469,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         directionLabel.stringValue = direction?.label ?? ""
         directionLabel.isHidden = direction == nil
         retryButton.isHidden = failedTone == nil || pendingTone != nil
-        copyButton.isHidden = output == nil && dictionaryResult.rows.isEmpty
+        copyButton.isHidden = output == nil && !dictionaryResult.hasContent
         toneMenu.isHidden = output == nil || alreadyInTarget
         toneMenu.isEnabled = pendingTone == nil
         toneMenu.selectItem(at: Tone.allCases.firstIndex(of: pendingTone ?? displayedTone) ?? 0)
@@ -497,6 +498,25 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
                     content.append(NSAttributedString(string: "  " + row.partsOfSpeech.joined(separator: "、"), attributes: [
                         .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor
                     ]))
+                }
+            }
+        }
+        if !dictionaryResult.senses.isEmpty {
+            let secondary: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor
+            ]
+            let explanation: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor
+            ]
+            if content.length > 0 { content.append(NSAttributedString(string: "\n\n")) }
+            content.append(NSAttributedString(string: "Open English WordNet", attributes: secondary))
+            for sense in dictionaryResult.senses {
+                content.append(NSAttributedString(string: "\n\n\(sense.word)  \(sense.partOfSpeech)", attributes: secondary))
+                if let definition = sense.definition {
+                    content.append(NSAttributedString(string: "\n" + definition, attributes: explanation))
+                }
+                for example in sense.examples {
+                    content.append(NSAttributedString(string: "\n“" + example + "”", attributes: secondary))
                 }
             }
         }
@@ -577,6 +597,8 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         let menu = NSMenu()
         let languages = menu.addItem(withTitle: "语言设置…", action: #selector(showLanguageSettings), keyEquivalent: "")
         languages.target = self
+        let dictionaries = menu.addItem(withTitle: "词库与显示…", action: #selector(showDictionarySettings), keyEquivalent: "")
+        dictionaries.target = self
         let preferences = menu.addItem(withTitle: "翻译接口…", action: #selector(showSettings), keyEquivalent: "")
         preferences.target = self
         menu.addItem(.separator())
@@ -591,6 +613,18 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         dismiss(restoreFocus: false)
         NSApp.activate()
         ProviderPreferences().show()
+        show(anchoredToStatusItem: anchored)
+    }
+
+    @objc private func showDictionarySettings() {
+        let anchored = anchorToStatusItem
+        dismiss(restoreFocus: false)
+        NSApp.activate()
+        if let saved = DictionaryPreferences.show(dictionarySettings), saved != dictionarySettings {
+            saved.save()
+            dictionarySettings = saved
+            refreshQuery()
+        }
         show(anchoredToStatusItem: anchored)
     }
 

@@ -59,8 +59,10 @@ def main():
         directory = Path(temporary)
         binary = directory / "checks"
         dictionary = directory / "dictionary.sqlite3"
-        with gzip.open(root / "Resources/dictionary.sqlite3.gz", "rb") as compressed, dictionary.open("wb") as raw:
-            shutil.copyfileobj(compressed, raw)
+        for name in ("dictionary", "wordnet"):
+            source = root / f"Resources/{name}.sqlite3.gz"
+            with gzip.open(source, "rb") as compressed, (directory / f"{name}.sqlite3").open("wb") as raw:
+                shutil.copyfileobj(compressed, raw)
         subprocess.run(["xcrun", "swiftc", str(root / "Sources/Dictionary.swift"), str(root / "Sources/Language.swift"),
                         str(root / "Sources/Translation.swift"), str(root / "Tests/Checks.swift"),
                         "-o", str(binary)], check=True)
