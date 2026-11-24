@@ -1,23 +1,50 @@
 # Quick Check for macOS
 
-支持 macOS 15 及更新版本。macOS 26 使用原生 Liquid Glass，macOS 15 使用 AppKit 的半透明材质。开启系统「降低透明度」时使用实色背景。构建需要提供 macOS 26 SDK 的 Xcode 或 Command Line Tools。
+支持 macOS 15 及更新版本。构建需要带有 macOS 26.4 或更新 SDK 的 Xcode 或 Command Line Tools。macOS 26 上使用原生 Liquid Glass。较早版本使用 AppKit 半透明材质，开启系统「降低透明度」时使用实色背景。
+
+## 构建和打开
+
+在仓库根目录执行：
 
 ```bash
 ./mac/build.sh
 open "mac/dist/Quick Check.app"
+```
+
+脚本生成适配当前 Mac 架构的应用，默认使用临时签名。可通过环境变量 `QUICK_CHECK_SIGN_IDENTITY` 指定本机的签名身份。
+
+## 查词和本地翻译
+
+1. 点菜单栏的文字放大镜，或直接打开 Quick Check.app。输入或粘贴文字，离线词库命中时立即显示结果。常见英文过去式、过去分词和短被动结构可回查原形。
+2. 输入较长文字后按回车使用 macOS 本地翻译。粘贴时，本地词典未命中的内容也会尝试系统翻译。Shift + Enter 可换行，输入法组词时先确认候选字。
+3. 首次使用某个语言对时，按回车打开系统下载界面。点所需语言旁的 **Download**，等语包就绪后返回并重试。系统会按所选语言对判断支持和安装状态。也可在 macOS「系统设置 → 通用 → 语言与地区 → 翻译语言」管理语包。
+4. 可复制查询结果。右下角分两行显示原文和当前译文的字符数，空白不计入。按 Esc 或点回其他应用可收起浮窗。
+
+在齿轮 →「语言设置」可修改主语言和默认第二语言。出厂组合为简体中文和英语。「自」模式将外语译成主语言，将主语言译成默认第二语言。也可以从左侧下拉指定目标语言，闲置 5 分钟后恢复自动模式。
+
+在齿轮 →「词库与显示」可分别启停 CC-CEDICT（中英）、Tomoshi（中日）和 Open English WordNet（英语），也可以单独开关详细释义和例句。WordNet 显示英文释义和原句，例句覆盖取决于词条。 [词库来源与许可](Resources/DICTIONARY_LICENSE.md)
+
+## AI 翻译和模型列表
+
+点击结果区下方的「AI 翻译」会把当前原文交给配置的服务。AI 译文可从语气菜单选「更随和」或「更正式」重新生成。
+
+在齿轮 →「翻译接口」配置兼容 Chat Completions 的服务：
+
+| 字段 | 填写方法 |
+| --- | --- |
+| Base URL | 填服务商提供的基础地址和版本路径，例如 `https://example.org/v1`。也可填完整的 `/chat/completions` 地址。 |
+| 模型 ID | 输入服务商提供的模型 ID，或点「获取模型」查询该地址对应的 `/models`，再从下拉框选择。 |
+| API Key | 按服务商要求填写。保存到钥匙串时，留空可继续使用与该接口关联的 Key。「仅本次运行使用」会把新填的 Key 暂存在内存，退出后失效。 |
+
+本机服务可使用回环 HTTP 地址，例如 Ollama 的 `http://127.0.0.1:11434/v1`。远程地址使用 HTTPS。首次获取模型或请求 AI 翻译时，macOS 可能要求授权读取已保存的 Key。
+
+使用 LocalAiMux 时，可在其「API」页选定模型并复制完整 JSON，再点 Quick Check「导入 LocalAiMux JSON」并保存。手填时，默认 Base URL 为 `http://127.0.0.1:8317/v1`，Key 使用 `lmx_` 开头的网关 Key。获取列表需要该 Key 具备 `models:read` 权限。
+
+## 开发检查
+
+```bash
+python3 mac/Tests/run.py --offline
 python3 mac/Tests/run.py
 ```
 
-构建脚本生成当前 Mac 架构的应用，默认使用本地临时签名。可用环境变量 `QUICK_CHECK_SIGN_IDENTITY` 指定本机的签名身份。
-
-- **查词**：点菜单栏里的文字放大镜图标，或直接打开 Quick Check.app。离线词库支持中英和中日双向查询，常用短语也会优先查词典。每个译词一行，词性在同一行标注。英文过去式、过去分词和短被动结构可以回查原形，常见的规则化误拼会在结果顶部显示正确形式。
-- **词库与显示**：从齿轮菜单打开「词库与显示」，可分别启停 CC-CEDICT（中英）、Tomoshi（中日）和 Open English WordNet（英语）。详细释义和例句可分别开关。WordNet 在常用英文词条下提供英文释义与英文原句，具体例句取决于源词条。
-- **语言**：左侧默认是「自动」。识别到外语时译成主语言，识别到主语言时译成默认第二语言。可在「语言设置」修改出厂的简体中文与英语组合。手动指定目标后，所有原文都译成该语言，闲置 5 分钟后恢复自动。
-- **翻译接口**：从齿轮进入「翻译接口」，填写兼容 Chat Completions 的接口和模型。Base URL 可填服务商基础地址（含版本路径，例如 `https://example.org/v1`）或完整的 `/chat/completions` 地址。点「获取模型」查询对应的 `/models`，也可以直接填写模型 ID。本机 Ollama 可用 `http://127.0.0.1:11434/v1`。
-- **LocalAiMux**：在 LocalAiMux 的「API」页选定模型，切到「JSON」并点击「复制完整配置」。在 Quick Check 的「翻译接口」选择「导入 LocalAiMux JSON」，确认 Base URL、模型 ID 和 API Key 后保存。也可手填默认 Base URL `http://127.0.0.1:8317/v1` 和 `lmx_` 网关 Key，点击「获取模型」，再从「模型 ID」下拉选择。列表查询需要 `models:read` 权限，翻译会使用保存的模型 ID。
-- **Key 保存方式**：「保存到钥匙串」下留空会保留已保存的 Key，同一个接口可继续使用。「仅本次运行使用」将新输入的 Key 暂存在内存，退出后失效。首次点击「AI 翻译」或「获取模型」时，macOS 可能要求授权读取已保存的 Key。
-- **本地翻译和 AI 翻译**：粘贴后先查本地词典，未命中时尝试系统翻译。手动输入按回车翻译，Shift + Enter 输入换行。若提示缺少语包，按回车向 macOS 请求下载。「AI 翻译」会把当前原文提交给配置的接口，成功后的译文可以调节语气。右下角显示不含空白的原文和译文字符数。
-- **词库**：构建会把仓库内的压缩 SQLite 词库展开到应用包。词库出处、许可与转换说明记录在 [DICTIONARY_LICENSE.md](Resources/DICTIONARY_LICENSE.md)。
-
-回归检查覆盖离线词库、语言配置与闲置重置、同文字体系的语种判断、多语言接口参数、语气重生成及服务错误。
-运行 `python3 mac/Tests/run.py --offline` 可只检查本地词库、语言设置和 LocalAiMux 接口配置与模型目录格式。
+离线模式检查词库、词形变化、语言方向和接口配置。默认模式增加本机回环的模拟接口检查。系统翻译需另行在安装语包后验证，具体步骤见[实施与验收计划](../IMPLEMENTATION_PLAN.md)。
