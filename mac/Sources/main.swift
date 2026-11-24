@@ -20,7 +20,7 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
         let symbol = NSImage(systemSymbolName: "text.magnifyingglass", accessibilityDescription: "Quick Check")
             ?? NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
         if let symbol {
-            let image = symbol.withSymbolConfiguration(.init(pointSize: 19, weight: .semibold)) ?? symbol
+            let image = symbol.withSymbolConfiguration(.init(pointSize: 17, weight: .regular)) ?? symbol
             image.isTemplate = true
             button.image = image
         } else {
@@ -56,7 +56,9 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
 
     private func lookupController() -> PanelController? {
         if controller == nil, let url = Bundle.main.url(forResource: "dictionary", withExtension: "sqlite3") {
-            controller = PanelController(statusButton: status?.button, dictionary: LocalDictionary(url: url))
+            let wordNet = Bundle.main.url(forResource: "wordnet", withExtension: "sqlite3")
+            controller = PanelController(statusButton: status?.button,
+                                         dictionary: LocalDictionary(url: url, wordNetURL: wordNet))
         }
         return controller
     }

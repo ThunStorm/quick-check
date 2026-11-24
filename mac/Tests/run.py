@@ -1,5 +1,6 @@
-"""Compile and run integration checks against a loopback Chat Completions fixture."""
+"""Compile and run offline checks, plus loopback fixture tests by default."""
 
+import argparse
 import gzip
 import json
 import shutil
@@ -18,8 +19,12 @@ class Provider(BaseHTTPRequestHandler):
         system, user = request["messages"]
         assert system["role"] == "system" and user["role"] == "user"
         payload = json.loads(user["content"])
-        assert payload["text"] == "我这边都行，你定吧。"
-        assert payload["from"] == "Simplified Chinese" and payload["to"] == "English"
+        multilingual = payload["text"] == "Le train part demain matin."
+        if multilingual:
+            assert payload["from"] == "French" and payload["to"] == "Korean"
+        else:
+            assert payload["text"] == "我这边都行，你定吧。"
+            assert payload["from"] == "Simplified Chinese" and payload["to"] == "English"
         model = request["model"]
         if model in ("limit", "unauthorized"):
             self.send_response(429 if model == "limit" else 401)
@@ -32,6 +37,8 @@ class Provider(BaseHTTPRequestHandler):
             return
         text = ("Please choose whichever works best for you."
                 if "courteous" in payload["tone"] else "Whatever works for you.")
+        if multilingual:
+            text = "기차는 내일 아침에 출발합니다."
         body = json.dumps({"choices": [{"message": {"content": "" if model == "empty" else text}}]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -44,23 +51,32 @@ class Provider(BaseHTTPRequestHandler):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--offline", action="store_true", help="Run checks without sending any translation requests")
+    args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    with tempfile.TemporaryDirectory() as temporary, ThreadingHTTPServer(("127.0.0.1", 0), Provider) as server:
+    with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
         binary = directory / "checks"
         dictionary = directory / "dictionary.sqlite3"
-        with gzip.open(root / "Resources/dictionary.sqlite3.gz", "rb") as compressed, dictionary.open("wb") as raw:
-            shutil.copyfileobj(compressed, raw)
-        subprocess.run(["xcrun", "swiftc", str(root / "Sources/Dictionary.swift"),
+        for name in ("dictionary", "wordnet"):
+            source = root / f"Resources/{name}.sqlite3.gz"
+            with gzip.open(source, "rb") as compressed, (directory / f"{name}.sqlite3").open("wb") as raw:
+                shutil.copyfileobj(compressed, raw)
+        subprocess.run(["xcrun", "swiftc", str(root / "Sources/Dictionary.swift"), str(root / "Sources/Language.swift"),
                         str(root / "Sources/Translation.swift"), str(root / "Tests/Checks.swift"),
                         "-o", str(binary)], check=True)
-        worker = Thread(target=server.serve_forever, daemon=True)
-        worker.start()
-        try:
-            subprocess.run([binary, dictionary, f"http://127.0.0.1:{server.server_port}"], check=True, timeout=20)
-        finally:
-            server.shutdown()
-            worker.join()
+        if args.offline:
+            subprocess.run([binary, dictionary], check=True, timeout=20)
+            return
+        with ThreadingHTTPServer(("127.0.0.1", 0), Provider) as server:
+            worker = Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                subprocess.run([binary, dictionary, f"http://127.0.0.1:{server.server_port}"], check=True, timeout=20)
+            finally:
+                server.shutdown()
+                worker.join()
 
 
 if __name__ == "__main__":
