@@ -1,0 +1,36 @@
+name: macOS Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check release version
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' mac/Resources/Info.plist)
+          test "$GITHUB_REF_NAME" = "v$version"
+      - name: Test
+        run: python3 mac/Tests/run.py
+      - name: Build and verify universal disk image
+        run: bash mac/package.sh
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          artifact="mac/dist/Quick-Check-$version-macOS-universal.dmg"
+          gh release create "$GITHUB_REF_NAME" "$artifact" "$artifact.sha256" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --notes-from-tag \
+            --title "Quick Check $version for macOS"

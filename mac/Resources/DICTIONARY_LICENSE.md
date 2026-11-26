@@ -19,7 +19,8 @@ under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/legalcode).
 
 Quick Check normalizes and indexes headwords and selected glosses, derives
 reverse lookup keys from glosses, summarizes Japanese parts of speech, selects
-common Japanese entries, and adds a small number of editorial entries.
+common Japanese entries, and adds curated translations for everyday vocabulary
+and common interface terms.
 The conversion is in `../tools/build_dictionary.py` in the source repository.
 
 ## English definitions and examples

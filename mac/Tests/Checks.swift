@@ -23,6 +23,29 @@ enum Checks {
         let ja = Direction(source: .japanese, target: .chinese)
         let zhJa = Direction(source: .chinese, target: .japanese)
 
+        try check(session.direction(for: "我是", dictionary: dictionary) == zhEn,
+                  "Characters shared by both Chinese scripts use the configured primary script")
+        try check(session.direction(for: "我是学生", dictionary: dictionary) == zhEn, "Simplified script is recognized")
+        let traditionalToSimplified = Direction(source: .traditionalChinese, target: .chinese)
+        let simplifiedToTraditional = Direction(source: .chinese, target: .traditionalChinese)
+        try check(session.direction(for: "我是學生", dictionary: dictionary) == traditionalToSimplified,
+                  "Traditional script routes to the Simplified primary")
+        try check(session.direction(for: "繁體", dictionary: dictionary) == traditionalToSimplified,
+                  "Traditional script is kept when the dictionary also contains its spelling")
+        try check(traditionalToSimplified.convertChineseScript("我是學生。") == "我是学生。"
+                  && simplifiedToTraditional.convertChineseScript("我是学生。") == "我是學生。",
+                  "Both script conversions run locally and keep punctuation")
+        try check(zhEn.convertChineseScript("我是学生") == nil, "Translation to English does not use script conversion")
+        var traditionalPrimary = LookupSession(settings: .init(primary: .traditionalChinese))
+        let traditionalToEnglish = Direction(source: .traditionalChinese, target: .english)
+        try check(traditionalPrimary.direction(for: "我是", dictionary: dictionary) == traditionalToEnglish,
+                  "Shared characters use Traditional when it is the primary language")
+        try check(dictionary.search("繁體", direction: traditionalToEnglish).hasContent,
+                  "Traditional source spellings remain available in the bilingual dictionary")
+        traditionalPrimary.select(.chinese)
+        try check(traditionalPrimary.direction(for: "我是", dictionary: dictionary).isAlreadyInTarget,
+                  "Shared characters already match a manually selected Chinese script")
+
         try check(session.direction(for: "草稿", dictionary: dictionary) == zhEn, "Chinese → English in automatic mode")
         try check(dictionary.lookup("草稿", direction: zhEn).contains { $0.meaning.contains("draft") }, "Chinese gloss")
         try check(session.direction(for: "deadline", dictionary: dictionary) == en, "English → Chinese in automatic mode")
@@ -32,6 +55,31 @@ enum Checks {
         try check(dictionary.lookup("領収書", direction: ja).first?.meaning.contains("收据") == true, "Japanese gloss")
         try check(session.direction(for: "てがみ", dictionary: dictionary) == ja, "Kana in automatic mode")
         try check(session.direction(for: "love", dictionary: dictionary) == en, "Short English word → Chinese")
+        for (phrase, meaning) in [("Console panel", "控制台面板"), ("Settings panel", "设置面板"),
+                                  ("Status bar", "状态栏"), ("Browser inspector", "浏览器检查器")] {
+            try check(session.direction(for: phrase, dictionary: dictionary) == en, "English interface phrase: \(phrase)")
+            try check(dictionary.search(phrase, direction: en).rows.first?.meaning == meaning,
+                      "Interface translation: \(phrase)")
+            try check(dictionary.lookup(meaning, direction: zhEn).contains { $0.meaning == phrase.lowercased() },
+                      "Chinese to English interface lookup: \(meaning)")
+        }
+        try check(dictionary.lookup("Console display", direction: en).isEmpty
+                  && session.direction(for: "Console display", dictionary: dictionary) == en,
+                  "Dictionary tokens support lower-confidence English phrases without an exact entry")
+        try check(session.direction(for: "Console de jeu", dictionary: dictionary) ==
+                  Direction(source: .french, target: .chinese), "Confident French is not overridden by English dictionary tokens")
+        let console = dictionary.search("console", direction: en, settings: .init(useWordNet: false))
+        try check(console.plainText == "控制台、操作台；游戏主机；靠墙桌  名词\n安慰、宽慰、抚慰  动词",
+                  "Console shows both parts of speech with synonyms grouped on each line")
+        for (word, technical, general) in [("port", "端口", "港口"), ("terminal", "终端", "航站楼"),
+                                           ("shell", "命令解释器", "外壳"), ("thread", "线程", "细线")] {
+            let result = dictionary.search(word, direction: en, settings: .init(useWordNet: false))
+            try check(result.plainText.contains(technical) && result.plainText.contains(general),
+                      "Polysemous \(word) retains technical and general meanings")
+        }
+        let draft = dictionary.search("draft", direction: en, settings: .init(useWordNet: false))
+        try check(draft.displayRows.first?.meaning == "草稿、草案；气流",
+                  "Synonyms share a line without conflating two meanings of draft")
         let love = DictionaryResult(entries: dictionary.lookup("love", direction: en))
         try check(love.rows.count == 6 && love.rows.first?.plainText == "爱意  名词"
                   && love.rows.last?.plainText == "喜欢  动词", "One result per gloss, with part of speech")
@@ -44,7 +92,7 @@ enum Checks {
             DictionaryEntry(headword: "宠", detail: "chong3", meaning: "宠"),
             DictionaryEntry(headword: "起きる", detail: "", meaning: "动词  起床；起立\n动词  起床；醒来")
         ])
-        try check(repeated.plainText == "宠\n起床  动词\n起立  动词\n醒来  动词", "Deduplicated glosses and row labels")
+        try check(repeated.plainText == "宠\n起床；起立；醒来  动词", "Deduplicated glosses and grouped row labels")
         let hope = dictionary.search("希望", direction: zhEn)
         try check(hope.rows.map(\.meaning) == ["hope", "wish"]
                   && hope.rows.allSatisfy { $0.partsOfSpeech == ["动词", "名词"] }, "Reviewed equivalents for 希望")
@@ -105,9 +153,16 @@ enum Checks {
         wordNetOnly.save(to: defaults)
         try check(DictionarySettings.load(from: defaults) == wordNetOnly, "Dictionary preferences persist")
         try check(LanguageSettings.load(from: defaults) == .init(), "Factory language defaults")
+        defaults.set("fr", forKey: "language.primary")
+        defaults.set("ko", forKey: "language.defaultSecondary")
+        try check(LanguageSettings.load(from: defaults) == .init(primary: .french, defaultSecond: .korean),
+                  "Existing language preferences keep live translation off")
+        let liveSettings = LanguageSettings(primary: .french, defaultSecond: .korean, liveTranslation: true)
+        liveSettings.save(to: defaults)
+        try check(LanguageSettings.load(from: defaults) == liveSettings, "Live translation can be enabled")
         let settings = LanguageSettings(primary: .french, defaultSecond: .korean)
         settings.save(to: defaults)
-        try check(LanguageSettings.load(from: defaults) == settings, "Language settings round trip")
+        try check(LanguageSettings.load(from: defaults) == settings, "Live translation can be turned off again")
         try check(LanguageSettings(primary: .english).defaultSecond == .chinese, "Languages must be distinct")
         var multilingual = LookupSession(settings: settings)
         let frenchKorean = Direction(source: .french, target: .korean)

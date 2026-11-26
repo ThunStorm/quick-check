@@ -6,7 +6,7 @@ Quick Check 是一个 macOS 菜单栏字典和翻译工具。点菜单栏里的�
 - **本地翻译**沿用自动语言方向。默认外语译成简体中文，中文译成英文，也可临时指定目标语言。整段文字可按回车交给 macOS 翻译，首用时可能需要下载语包。
 - **AI 翻译**从结果下方主动发起。可配置兼容 Chat Completions 的接口，按 Base URL 获取模型列表，也可导入 LocalAiMux 配置。
 
-[macOS 构建与使用指南](mac/README.md) · [词库来源与许可](mac/Resources/DICTIONARY_LICENSE.md)
+[macOS 安装、更新与使用指南](mac/README.md) · [词库来源与许可](mac/Resources/DICTIONARY_LICENSE.md)
 
 ## 后续计划
 

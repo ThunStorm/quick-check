@@ -6,6 +6,7 @@ struct DictionaryEntry: Equatable {
     let headword: String
     let detail: String
     let meaning: String
+    var isReviewed = false
 }
 
 struct DictionarySettings: Equatable, Codable {
@@ -28,7 +29,7 @@ struct DictionarySettings: Equatable, Codable {
     }
 
     func includes(_ direction: Direction) -> Bool {
-        switch (direction.source, direction.target) {
+        switch (direction.dictionarySource, direction.target) {
         case (.chinese?, .english), (.english?, .chinese): useCEDICT
         case (.chinese?, .japanese), (.japanese?, .chinese): useTomoshi
         default: false
@@ -49,8 +50,9 @@ struct DictionarySense: Equatable {
 
 struct DictionaryResult: Equatable {
     struct Row: Equatable {
-        let meaning: String
+        var meaning: String
         var partsOfSpeech: [String]
+        fileprivate var sense: Int
 
         var plainText: String {
             partsOfSpeech.isEmpty ? meaning : "\(meaning)  \(partsOfSpeech.joined(separator: "、"))"
@@ -60,7 +62,7 @@ struct DictionaryResult: Equatable {
     private static let partOfSpeechLabels: Set<String> = [
         "名词", "动词", "形容词", "副词", "代词", "限定词", "介词", "连词", "短语"
     ]
-    private static let separators = CharacterSet(charactersIn: "；;、")
+    private static let senseSeparators = CharacterSet(charactersIn: "；;")
     let formNote: String?
     let lemma: String?
     let rows: [Row]
@@ -72,6 +74,7 @@ struct DictionaryResult: Equatable {
         self.lemma = lemma
         var rows: [Row] = []
         var positions: [String: Int] = [:]
+        var senseIndex = 0
         for entry in entries {
             let fallback = Self.partsOfSpeech(in: entry.detail.components(separatedBy: " · ").last ?? "")
             for line in entry.meaning.split(whereSeparator: \.isNewline) {
@@ -81,25 +84,28 @@ struct DictionaryResult: Equatable {
                 }
                 let parts = sense?.0 ?? fallback
                 let meaning = sense?.1 ?? String(line)
-                let glosses = meaning.replacingOccurrences(of: " / ", with: "；")
-                    .components(separatedBy: Self.separators)
-                for gloss in glosses {
-                    let gloss = gloss.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !gloss.isEmpty else { continue }
-                    let lexicalParts = target == .english ? gloss.components(separatedBy: ", ").map(Self.englishWord) : []
-                    let candidates: [(String, [String])]
-                    if !lexicalParts.isEmpty && lexicalParts.allSatisfy({ $0 != nil }) {
-                        candidates = lexicalParts.compactMap { $0 }.map { ($0.word, parts.isEmpty ? $0.parts : parts) }
-                    } else {
-                        candidates = [(gloss, parts)]
-                    }
-                    for (word, tags) in candidates {
-                        let key = LocalDictionary.normalize(word)
-                        if let index = positions[key] {
-                            rows[index].partsOfSpeech += tags.filter { !rows[index].partsOfSpeech.contains($0) }
+                let groups = meaning.replacingOccurrences(of: " / ", with: "；")
+                    .components(separatedBy: Self.senseSeparators)
+                for group in groups {
+                    senseIndex += 1
+                    for gloss in group.components(separatedBy: "、") {
+                        let gloss = gloss.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !gloss.isEmpty else { continue }
+                        let lexicalParts = target == .english ? gloss.components(separatedBy: ", ").map(Self.englishWord) : []
+                        let candidates: [(String, [String])]
+                        if !lexicalParts.isEmpty && lexicalParts.allSatisfy({ $0 != nil }) {
+                            candidates = lexicalParts.compactMap { $0 }.map { ($0.word, parts.isEmpty ? $0.parts : parts) }
                         } else {
-                            positions[key] = rows.count
-                            rows.append(Row(meaning: word, partsOfSpeech: tags))
+                            candidates = [(gloss, parts)]
+                        }
+                        for (word, tags) in candidates {
+                            let key = LocalDictionary.normalize(word)
+                            if let index = positions[key] {
+                                rows[index].partsOfSpeech += tags.filter { !rows[index].partsOfSpeech.contains($0) }
+                            } else {
+                                positions[key] = rows.count
+                                rows.append(Row(meaning: word, partsOfSpeech: tags, sense: senseIndex))
+                            }
                         }
                     }
                 }
@@ -108,8 +114,21 @@ struct DictionaryResult: Equatable {
         self.rows = rows
     }
 
+    var displayRows: [Row] {
+        var grouped: [Row] = []
+        for row in rows {
+            if let index = grouped.indices.last, grouped[index].partsOfSpeech == row.partsOfSpeech {
+                grouped[index].meaning += (grouped[index].sense == row.sense ? "、" : "；") + row.meaning
+                grouped[index].sense = row.sense
+            } else {
+                grouped.append(row)
+            }
+        }
+        return grouped
+    }
+
     var plainText: String {
-        let translations = ([formNote].compactMap { $0 } + rows.map(\.plainText)).joined(separator: "\n")
+        let translations = ([formNote].compactMap { $0 } + displayRows.map(\.plainText)).joined(separator: "\n")
         let details = senses.isEmpty ? "" : "Open English WordNet\n"
             + senses.map(\.plainText).joined(separator: "\n\n")
         return [translations, details].filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -272,7 +291,7 @@ final class LocalDictionary {
               let statement else { return [] }
         defer { sqlite3_finalize(statement) }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        sqlite3_bind_text(statement, 1, direction.key, -1, transient)
+        sqlite3_bind_text(statement, 1, direction.dictionaryKey, -1, transient)
         sqlite3_bind_text(statement, 2, key, -1, transient)
 
         var results: [DictionaryEntry] = []
@@ -284,7 +303,8 @@ final class LocalDictionary {
             results.append(DictionaryEntry(
                 headword: String(cString: sqlite3_column_text(statement, 0)),
                 detail: String(cString: sqlite3_column_text(statement, 1)),
-                meaning: String(cString: sqlite3_column_text(statement, 2))
+                meaning: String(cString: sqlite3_column_text(statement, 2)),
+                isReviewed: priority == 0
             ))
         }
         return results

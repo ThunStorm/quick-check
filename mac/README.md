@@ -2,16 +2,27 @@
 
 支持 macOS 15 及更新版本。构建需要带有 macOS 26.4 或更新 SDK 的 Xcode 或 Command Line Tools。macOS 26 上使用原生 Liquid Glass。较早版本使用 AppKit 半透明材质，开启系统「降低透明度」时使用实色背景。
 
-## 构建和打开
+## 安装和更新
+
+在仓库根目录执行：
+
+```bash
+./mac/build.sh --install
+```
+
+应用从「应用程序」中的 Quick Check 打开。再次运行同一命令会替换 `/Applications/Quick Check.app` 并启动新版，沿用现有设置。
+
+## 仅构建
 
 在仓库根目录执行：
 
 ```bash
 ./mac/build.sh
-open "mac/dist/Quick Check.app"
 ```
 
-脚本生成适配当前 Mac 架构的应用，默认使用临时签名。可通过环境变量 `QUICK_CHECK_SIGN_IDENTITY` 指定本机的签名身份。
+脚本在 `mac/dist` 生成适配当前 Mac 架构的应用，默认使用临时签名。可通过环境变量 `QUICK_CHECK_SIGN_IDENTITY` 指定本机的签名身份。
+
+发布用的通用构建可运行 `./mac/build.sh --universal`，产物同时包含 Apple 芯片（arm64）和 Intel（x86_64）架构。`bash mac/package.sh` 会进一步生成、验证 DMG 和 SHA‑256 校验文件。推送与应用版本一致的 `vX.Y.Z` 标签会触发 GitHub Release。
 
 ## 查词和本地翻译
 
@@ -22,7 +33,13 @@ open "mac/dist/Quick Check.app"
 
 在齿轮 →「语言设置」可修改主语言和默认第二语言。出厂组合为简体中文和英语。「自」模式将外语译成主语言，将主语言译成默认第二语言。也可以从左侧下拉指定目标语言，闲置 5 分钟后恢复自动模式。
 
+同一界面的「输入时实时翻译」默认关闭。开启后，词库未命中的文字会在停止输入片刻后自动使用 macOS 本地翻译。首次下载语包仍需按回车。
+
+简繁字形转换在本机完成。简繁共用字按已指定的中文目标或语言设置判断。
+
 在齿轮 →「词库与显示」可分别启停 CC-CEDICT（中英）、Tomoshi（中日）和 Open English WordNet（英语），也可以单独开关详细释义和例句。WordNet 显示英文释义和原句，例句覆盖取决于词条。 [词库来源与许可](Resources/DICTIONARY_LICENSE.md)
+
+中英词库也收录了常见软件界面术语，如 `console panel`（控制台面板）、`menu bar`（菜单栏）。`console`、`port` 等多义词同时保留常见技术义和一般词义。查词时，同组译义用顿号并排显示，同一词性下的不同义项用分号隔开。
 
 ## AI 翻译和模型列表
 

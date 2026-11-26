@@ -17,10 +17,10 @@ private final class QuickCheckApp: NSObject, NSApplicationDelegate {
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: 28)
         guard let button = item.button else { return }
-        let symbol = NSImage(systemSymbolName: "text.magnifyingglass", accessibilityDescription: "Quick Check")
-            ?? NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
-        if let symbol {
-            let image = symbol.withSymbolConfiguration(.init(pointSize: 17, weight: .regular)) ?? symbol
+        let template = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png").flatMap(NSImage.init(contentsOf:))
+        template?.size = NSSize(width: 24, height: 24)
+        let fallback = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Quick Check")
+        if let image = template ?? fallback {
             image.isTemplate = true
             button.image = image
         } else {

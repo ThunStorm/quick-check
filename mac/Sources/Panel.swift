@@ -104,6 +104,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     private var pendingEngine: TranslationEngine?
     private var failedTone: Tone?
     private var errorMessage: String?
+    private var liveTranslationTask: Task<Void, Never>?
     private var request: Task<Void, Never>?
     private var localTranslationHost: NSView?
     private var presentingSystemUI = false
@@ -136,10 +137,12 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
             input.setSelectedRange(NSRange(location: 0, length: (input.string as NSString).length))
             installMonitors()
         }
+        scheduleLiveTranslation()
     }
 
     private func dismiss(restoreFocus: Bool) {
         guard panel.isVisible else { return }
+        cancelScheduledLiveTranslation()
         if pendingEngine == .local { cancelTranslation() }
         for monitor in monitors { NSEvent.removeMonitor(monitor) }
         monitors.removeAll()
@@ -321,14 +324,24 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         guard !input.isComposing else { return }
         session.touch()
         refreshQuery()
-        if input.isPasting, !input.hasMarkedText() { submitLocalQuery(allowDownload: false) }
+        if input.isPasting {
+            submitLocalQuery(allowDownload: false)
+        } else {
+            scheduleLiveTranslation()
+        }
     }
 
     private func compositionChanged() {
         updatePlaceholder()
-        guard !input.isComposing, source != lastQueriedText else { return }
-        session.touch()
-        refreshQuery()
+        guard !input.isComposing else {
+            cancelScheduledLiveTranslation()
+            return
+        }
+        if source != lastQueriedText {
+            session.touch()
+            refreshQuery()
+        }
+        scheduleLiveTranslation()
     }
 
     private func updatePlaceholder() {
@@ -379,19 +392,44 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         submitLocalQuery(allowDownload: false)
     }
 
+    private var canSubmitLocalQuery: Bool {
+        direction?.isAlreadyInTarget == false && !source.isEmpty && !input.isComposing
+            && dictionaryResult.rows.isEmpty && pendingEngine == nil
+    }
+
+    private func scheduleLiveTranslation() {
+        guard session.settings.liveTranslation, panel.isVisible, canSubmitLocalQuery,
+              liveTranslationTask == nil, output == nil, errorMessage == nil else { return }
+        liveTranslationTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled, let self else { return }
+            self.liveTranslationTask = nil
+            self.submitLocalQuery(allowDownload: false)
+        }
+    }
+
+    private func cancelScheduledLiveTranslation() {
+        liveTranslationTask?.cancel()
+        liveTranslationTask = nil
+    }
+
     private func submitLocalQuery(allowDownload: Bool) {
-        guard let direction, !direction.isAlreadyInTarget, !source.isEmpty, !input.isComposing,
-              dictionaryResult.rows.isEmpty, pendingEngine == nil else { return }
+        guard let direction, canSubmitLocalQuery else { return }
+        cancelScheduledLiveTranslation()
         guard source.count <= ProviderSettings.maxLength else {
             errorMessage = "最多可翻译 \(ProviderSettings.maxLength) 字符。"
             render()
             return
         }
-        let translation = LocalTranslation(text: source, direction: direction)
         let current = generation
         pendingEngine = .local
         failedTone = nil
         errorMessage = nil
+        if let converted = direction.convertChineseScript(source) {
+            finishLocalTranslation(.success(converted), generation: current)
+            return
+        }
+        let translation = LocalTranslation(text: source, direction: direction)
         render()
         request = Task { [weak self] in
             do {
@@ -452,6 +490,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
     }
 
     private func cancelTranslation() {
+        cancelScheduledLiveTranslation()
         generation += 1
         request?.cancel()
         request = nil
@@ -505,6 +544,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
 
     private func generate(_ tone: Tone) {
         guard let direction, !direction.isAlreadyInTarget, !source.isEmpty, pendingEngine == nil else { return }
+        cancelScheduledLiveTranslation()
         let text = source
         guard text.count <= ProviderSettings.maxLength else {
             errorMessage = "最多可翻译 \(ProviderSettings.maxLength) 字符。"
@@ -587,10 +627,13 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
             info.stringValue = "已是目标语"
         } else if let outputEngine {
             info.stringValue = outputEngine == .local ? "本地翻译" : "AI 译文"
+        } else if !dictionaryResult.rows.isEmpty {
+            info.stringValue = "本地词典"
         } else {
-            info.stringValue = dictionaryResult.rows.isEmpty ? "↵ 本地翻译" : "本地词典"
+            info.stringValue = session.settings.liveTranslation ? "实时翻译" : "↵ 本地翻译"
         }
-        let translated = output ?? (dictionaryResult.rows.isEmpty ? nil : dictionaryResult.rows.map(\.meaning).joined(separator: "\n"))
+        let translationRows = dictionaryResult.displayRows
+        let translated = output ?? (translationRows.isEmpty ? nil : translationRows.map(\.meaning).joined(separator: "\n"))
         sourceCount.stringValue = "原文 \(characterCount(source))"
         resultCount.stringValue = "译文 \(translated.map(characterCount) ?? "—")"
         info.toolTip = info.stringValue
@@ -607,7 +650,7 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
                     .font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor
                 ]))
             }
-            for (index, row) in dictionaryResult.rows.enumerated() {
+            for (index, row) in translationRows.enumerated() {
                 if index > 0 { content.append(NSAttributedString(string: "\n")) }
                 content.append(NSAttributedString(string: row.meaning, attributes: [
                     .font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.labelColor
@@ -762,9 +805,13 @@ final class PanelController: NSObject, NSTextViewDelegate, NSWindowDelegate {
         NSApp.activate()
         if let saved = LanguagePreferences(settings: session.settings).show(), saved != session.settings {
             saved.save()
-            session = LookupSession(settings: saved)
-            installLanguageMenu()
-            refreshQuery()
+            if saved.primary == session.settings.primary && saved.defaultSecond == session.settings.defaultSecond {
+                session.settings = saved
+            } else {
+                session = LookupSession(settings: saved)
+                installLanguageMenu()
+                refreshQuery()
+            }
         }
         show(anchoredToStatusItem: anchored)
     }

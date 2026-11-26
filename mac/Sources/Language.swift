@@ -76,6 +76,19 @@ enum Language: String, Codable, CaseIterable {
         if self == .chinese { return .simplifiedChinese }
         return NLLanguage(rawValue: rawValue)
     }
+
+    fileprivate var isChinese: Bool { self == .chinese || self == .traditionalChinese }
+
+    fileprivate func convertChineseScript(_ text: String) -> String? {
+        switch self {
+        case .chinese:
+            text.applyingTransform(StringTransform("Traditional-Simplified"), reverse: false)
+        case .traditionalChinese:
+            text.applyingTransform(StringTransform("Simplified-Traditional"), reverse: false)
+        default:
+            nil
+        }
+    }
 }
 
 struct Direction: Equatable {
@@ -83,46 +96,56 @@ struct Direction: Equatable {
     let target: Language
 
     var label: String { "\(source?.label ?? "自动") → \(target.label)" }
-    var key: String { (source?.rawValue ?? "") + "-" + target.rawValue }
+    var dictionarySource: Language? { source == .traditionalChinese ? .chinese : source }
+    var dictionaryKey: String { (dictionarySource?.rawValue ?? "") + "-" + target.rawValue }
     var isAlreadyInTarget: Bool { source == target }
 
     var hasLocalDictionary: Bool {
-        switch (source, target) {
+        switch (dictionarySource, target) {
         case (.chinese?, .english), (.chinese?, .japanese), (.english?, .chinese), (.japanese?, .chinese):
             true
         default:
             false
         }
     }
+
+    func convertChineseScript(_ text: String) -> String? {
+        guard source?.isChinese == true, !isAlreadyInTarget else { return nil }
+        return target.convertChineseScript(text)
+    }
 }
 
 struct LanguageSettings: Equatable {
     private static let primaryKey = "language.primary"
     private static let secondKey = "language.defaultSecondary"
+    private static let liveTranslationKey = "language.liveTranslation"
 
     let primary: Language
     let defaultSecond: Language
+    let liveTranslation: Bool
 
-    init(primary: Language = .chinese, defaultSecond: Language = .english) {
+    init(primary: Language = .chinese, defaultSecond: Language = .english, liveTranslation: Bool = false) {
         self.primary = primary
         self.defaultSecond = primary == defaultSecond ? (primary == .english ? .chinese : .english) : defaultSecond
+        self.liveTranslation = liveTranslation
     }
 
     static func load(from defaults: UserDefaults = .standard) -> Self {
         let primary = defaults.string(forKey: primaryKey).flatMap(Language.init(rawValue:)) ?? .chinese
         let second = defaults.string(forKey: secondKey).flatMap(Language.init(rawValue:)) ?? .english
-        return Self(primary: primary, defaultSecond: second)
+        return Self(primary: primary, defaultSecond: second, liveTranslation: defaults.bool(forKey: liveTranslationKey))
     }
 
     func save(to defaults: UserDefaults = .standard) {
         defaults.set(primary.rawValue, forKey: Self.primaryKey)
         defaults.set(defaultSecond.rawValue, forKey: Self.secondKey)
+        defaults.set(liveTranslation, forKey: Self.liveTranslationKey)
     }
 }
 
 struct LookupSession {
     static let idleSeconds: TimeInterval = 5 * 60
-    let settings: LanguageSettings
+    var settings: LanguageSettings
     private(set) var selectedTarget: Language?
     private var lastActivity: Date?
 
@@ -176,25 +199,52 @@ struct LookupSession {
             let chinese = !dictionary.lookup(text, direction: zhEnglish).isEmpty
                 || !dictionary.lookup(text, direction: zhJapanese).isEmpty
             let japanese = !dictionary.lookup(text, direction: jaChinese).isEmpty
-            if chinese { return .chinese }
+            if chinese { return identifyChineseScript(in: sample) }
             if japanese { return .japanese }
         }
 
-        if letters.allSatisfy({ $0.isASCII }), dictionary.englishInflection(text) != nil {
-            return .english
+        let asciiLetters = letters.allSatisfy(\.isASCII)
+        let english = Direction(source: .english, target: .chinese)
+        let englishEntries = asciiLetters ? dictionary.lookup(text, direction: english) : []
+        if asciiLetters {
+            if englishEntries.first?.isReviewed == true || dictionary.englishInflection(text) != nil {
+                return .english
+            }
         }
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(sample)
         let ranked = recognizer.languageHypotheses(withMaximum: 3)
             .sorted { $0.value > $1.value }
         if let best = ranked.first, best.value >= 0.60 {
-            return Language.allCases.first { $0.recognitionCode == best.key }
+            let language = Language.allCases.first { $0.recognitionCode == best.key }
+            return language?.isChinese == true ? identifyChineseScript(in: sample, hint: language) : language
         }
-        if han * 2 >= letters.count { return .chinese }
-        let english = Direction(source: .english, target: .chinese)
-        if letters.allSatisfy({ $0.isASCII }), !dictionary.lookup(text, direction: english).isEmpty {
-            return .english
+        if han * 2 >= letters.count { return identifyChineseScript(in: sample) }
+        if asciiLetters {
+            if !englishEntries.isEmpty { return .english }
+            if ranked.first?.key == .english, sample.count <= 80 {
+                let words = sample.split { !$0.isLetter && $0 != "'" && $0 != "’" && $0 != "-" }
+                if words.count > 1, words.allSatisfy({ !dictionary.lookup(String($0), direction: english).isEmpty }) {
+                    return .english
+                }
+            }
         }
         return nil
+    }
+
+    private func identifyChineseScript(in text: String, hint: Language? = nil) -> Language {
+        let changesToSimplified = (Language.chinese.convertChineseScript(text) ?? text) != text
+        let changesToTraditional = (Language.traditionalChinese.convertChineseScript(text) ?? text) != text
+        switch (changesToSimplified, changesToTraditional) {
+        case (true, false): return .traditionalChinese
+        case (false, true): return .chinese
+        case (true, true):
+            if let hint { return hint }
+        case (false, false):
+            break
+        }
+        // Shared characters do not carry evidence for either script.
+        return [selectedTarget, settings.primary, settings.defaultSecond]
+            .compactMap { $0 }.first(where: \.isChinese) ?? .chinese
     }
 }

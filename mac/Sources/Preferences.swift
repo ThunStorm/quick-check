@@ -200,6 +200,7 @@ final class ProviderPreferences: NSObject, NSTextFieldDelegate {
 final class LanguagePreferences: NSObject {
     private let primary = NSPopUpButton()
     private let secondary = NSPopUpButton()
+    private let liveTranslation = NSButton(checkboxWithTitle: "输入时实时翻译", target: nil, action: nil)
 
     init(settings: LanguageSettings) {
         super.init()
@@ -210,12 +211,14 @@ final class LanguagePreferences: NSObject {
         primary.target = self
         primary.action = #selector(refreshSecondary)
         fillSecondary(selected: settings.defaultSecond)
+        liveTranslation.state = settings.liveTranslation ? .on : .off
     }
 
     func show() -> LanguageSettings? {
         let form = NSGridView(views: [
             [NSTextField(labelWithString: "主语言"), primary],
-            [NSTextField(labelWithString: "默认第二语言"), secondary]
+            [NSTextField(labelWithString: "默认第二语言"), secondary],
+            [NSView(), liveTranslation]
         ])
         form.columnSpacing = 12
         form.rowSpacing = 8
@@ -231,7 +234,8 @@ final class LanguagePreferences: NSObject {
         alert.addButton(withTitle: "保存")
         alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn, let secondaryLanguage else { return nil }
-        return LanguageSettings(primary: primaryLanguage, defaultSecond: secondaryLanguage)
+        return LanguageSettings(primary: primaryLanguage, defaultSecond: secondaryLanguage,
+                                liveTranslation: liveTranslation.state == .on)
     }
 
     private var primaryLanguage: Language {
